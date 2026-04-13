@@ -1,78 +1,96 @@
+"""HandDetector — MediaPipe HandLandmarker (Tasks API, VIDEO mode).
+
+Uses ``detect_for_video(image, ts_ms)`` with a monotonic timestamp so that
+MediaPipe can apply inter-frame tracking smoothing correctly.
 """
-HandDetector - Wrapper MediaPipe HandLandmarker (Tasks API, mediapipe >= 0.10).
-Restituisce un oggetto compatibile con il vecchio formato multi_hand_landmarks.
-"""
+from __future__ import annotations
+
 import logging
-import os
+import time
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-import gazecontrol.config as config
+from gazecontrol.paths import Paths
+from gazecontrol.settings import get_settings
 from gazecontrol.utils.model_downloader import ensure_model
 
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'models')
-
 
 # ---------------------------------------------------------------------------
-# Wrapper di compatibilità: emula il vecchio risultato mp.solutions.hands
-# così feature_extractor.py non richiede modifiche.
+# Compatibility wrapper: emulate legacy mp.solutions.hands result format
+# so that GestureFeatureExtractor.extract() requires no changes.
 # ---------------------------------------------------------------------------
+
 
 class _Landmark:
-    __slots__ = ('x', 'y', 'z')
+    __slots__ = ("x", "y", "z")
 
-    def __init__(self, lm):
-        self.x = lm.x
-        self.y = lm.y
-        self.z = lm.z
+    def __init__(self, lm: object) -> None:
+        self.x: float = lm.x  # type: ignore[attr-defined]
+        self.y: float = lm.y  # type: ignore[attr-defined]
+        self.z: float = lm.z  # type: ignore[attr-defined]
 
 
 class _HandLandmarks:
-    def __init__(self, landmarks):
+    def __init__(self, landmarks: list) -> None:
         self.landmark = [_Landmark(lm) for lm in landmarks]
 
 
 class _HandResult:
-    """Emula il risultato di mp.solutions.hands.Hands.process()."""
+    """Emulates ``mp.solutions.hands.Hands.process()`` result."""
 
-    def __init__(self, hand_landmarks_list):
+    def __init__(self, hand_landmarks_list: list) -> None:
         self.multi_hand_landmarks = [_HandLandmarks(lms) for lms in hand_landmarks_list]
-        # multi_handedness non usato da feature_extractor, ma manteniamo la struttura
         self.multi_handedness = [None] * len(hand_landmarks_list)
 
 
 # ---------------------------------------------------------------------------
 
-class HandDetector:
-    """Rileva 21 landmark per mano con MediaPipe Tasks API."""
 
-    def __init__(self):
-        model_path = ensure_model('hand_landmarker.task', MODELS_DIR)
+class HandDetector:
+    """Detect 21 hand landmarks per hand with MediaPipe Tasks API (VIDEO mode)."""
+
+    def __init__(self) -> None:
+        s = get_settings().gesture
+        model_path = ensure_model("hand_landmarker.task", str(Paths.models()))
 
         base_options = mp_python.BaseOptions(model_asset_path=model_path)
         options = mp_vision.HandLandmarkerOptions(
             base_options=base_options,
-            num_hands=config.HAND_MAX_HANDS,
-            min_hand_detection_confidence=config.HAND_MIN_DETECTION_CONFIDENCE,
-            min_hand_presence_confidence=config.HAND_MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.HAND_MIN_TRACKING_CONFIDENCE,
+            running_mode=mp_vision.RunningMode.VIDEO,  # enables detect_for_video
+            num_hands=s.max_hands,
+            min_hand_detection_confidence=s.min_detection_confidence,
+            min_hand_presence_confidence=s.min_detection_confidence,
+            min_tracking_confidence=s.min_tracking_confidence,
         )
         self._detector = mp_vision.HandLandmarker.create_from_options(options)
-        logger.info("HandDetector (Tasks API) inizializzato")
+        self._start_time_ms: int = int(time.monotonic() * 1000)
+        logger.info("HandDetector (Tasks API, VIDEO mode) initialized.")
 
-    def process(self, frame_rgb):
-        """
-        Processa un frame RGB e ritorna un oggetto compatibile con il vecchio
-        risultato Hands (.multi_hand_landmarks[0].landmark[i].x/y/z).
-        Ritorna None se nessuna mano rilevata.
+    def process(
+        self,
+        frame_rgb: object,  # np.ndarray RGB uint8
+        ts_ms: int | None = None,
+    ) -> "_HandResult | None":
+        """Detect hand landmarks in *frame_rgb*.
+
+        Args:
+            frame_rgb: RGB frame as numpy array (H, W, 3) uint8.
+            ts_ms:     Monotonic timestamp in milliseconds.  If None,
+                       the current monotonic time is used.
+
+        Returns:
+            Compatible hand result object, or None if no hand detected.
         """
         try:
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-            result = self._detector.detect(mp_image)
+            if ts_ms is None:
+                ts_ms = int(time.monotonic() * 1000) - self._start_time_ms
+
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)  # type: ignore[arg-type]
+            result = self._detector.detect_for_video(mp_image, ts_ms)
 
             if not result.hand_landmarks:
                 return None
@@ -80,12 +98,13 @@ class HandDetector:
             return _HandResult(result.hand_landmarks)
 
         except Exception:
-            logger.exception("Errore durante process HandDetector")
+            logger.exception("HandDetector.process() failed.")
             return None
 
-    def close(self):
+    def close(self) -> None:
+        """Release MediaPipe resources."""
         try:
             self._detector.close()
-            logger.info("HandDetector chiuso")
+            logger.info("HandDetector closed.")
         except Exception:
-            logger.exception("Errore durante chiusura HandDetector")
+            logger.exception("HandDetector.close() failed.")

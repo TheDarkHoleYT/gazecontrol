@@ -55,7 +55,6 @@ class MLPClassifier:
         try:
             outputs = self._session.run(None, {self._input_name: vec})
             probas = outputs[1][0]
-            # BUG-8: validate that probas is a dict with the expected keys
             if not isinstance(probas, dict):
                 logger.warning("MLP returned non-dict probabilities (type=%s); skipping", type(probas).__name__)
                 return (None, 0.0)

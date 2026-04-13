@@ -37,8 +37,9 @@ class GazeMapper:
     def __init__(self, screen_w: int = 1920, screen_h: int = 1080):
         self._sw = screen_w
         self._sh = screen_h
-        self._coef_x: np.ndarray | None = None  # (n_features,)
-        self._coef_y: np.ndarray | None = None
+        self._coef_x: object | None = None  # Ridge estimator when fitted
+        self._coef_y: object | None = None
+        self._scaler: object | None = None   # StandardScaler when fitted (always init'd)
         self._is_fitted = False
 
     @property
@@ -107,14 +108,9 @@ class GazeMapper:
         Returns:
             (px_x, px_y) oppure None se non ancora fittato.
         """
-        if not self._is_fitted:
-            return self._geometric_estimate(yaw, pitch)
-
-        if self._scaler is None:
-            raise RuntimeError(
-                "GazeMapper is marked fitted but scaler is None — "
-                "profile may be corrupted. Re-run calibration."
-            )
+        if not self._is_fitted or self._scaler is None:
+            # Not calibrated — return None so the ensemble can skip L2CS contribution.
+            return None
 
         angles = np.array([[yaw, pitch]])
         hp = np.array([list(head_pose)]) if head_pose else None

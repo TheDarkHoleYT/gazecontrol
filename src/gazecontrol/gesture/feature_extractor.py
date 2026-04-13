@@ -33,7 +33,6 @@ class GestureFeatureExtractor:
             dx = buf[-1][0] - buf[0][0]
             dy = buf[-1][1] - buf[0][1]
             n = len(buf) - 1
-            # BUG-9: use config resolution instead of hardcoded 640x480
             vx = (dx / n) * FEATURE_REF_WIDTH
             vy = (dy / n) * FEATURE_REF_HEIGHT
 

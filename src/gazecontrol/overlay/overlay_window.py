@@ -7,7 +7,7 @@ Thread-safety
 The pipeline runs in a background thread.  Direct QWidget method calls from a
 non-Qt thread are undefined behaviour in Qt.
 
-Safe cross-thread update path (ARCH-6 fix):
+Safe cross-thread update path:
   - ``_OverlayWidget`` declares a ``data_changed`` signal that carries the new
     HUD state dict.
   - The signal is connected to ``_on_data_changed`` with ``QueuedConnection``.
