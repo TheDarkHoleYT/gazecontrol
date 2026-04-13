@@ -1,98 +1,77 @@
+"""Deprecated configuration shim.
+
+.. deprecated::
+    Import from :mod:`gazecontrol.settings` and :mod:`gazecontrol.paths`
+    instead. This module will be removed in v0.4.0.
 """
-GazeControl - Parametri Globali di Configurazione
-"""
-import os
+from __future__ import annotations
 
-_HERE = os.path.dirname(__file__)
-MODELS_DIR = os.path.join(_HERE, '..', 'models')
+import warnings
 
-# =============================================================================
-# CAMERA
-# =============================================================================
-CAMERA_INDEX = 0
-# 1280x720 preferito; frame_grabber fa fallback a 640x480 se non supportato.
-FRAME_WIDTH  = 1280
-FRAME_HEIGHT = 720
-CAMERA_FPS   = 30
+from gazecontrol.paths import Paths
+from gazecontrol.settings import get_settings
 
-# =============================================================================
-# GAZE (Enterprise)
-# =============================================================================
-# Modalità modello gaze: 'landmark' | 'appearance' | 'hybrid'
-GAZE_MODEL_MODE = 'hybrid'
+_DEPRECATION_MSG = (
+    "gazecontrol.config is deprecated and will be removed in v0.4.0. "
+    "Use gazecontrol.settings.get_settings() and gazecontrol.paths.Paths instead."
+)
 
-# One Euro Filter (sostituisce EMA).
-# min_cutoff: frequenza di taglio minima durante le fixation (Hz) — valori più
-#   alti = meno smooth, più reattivo anche a riposo.
-# beta: quanto aumenta la cutoff con la velocità — valori più alti = più
-#   reattivo durante le saccadi.
-GAZE_1EURO_MIN_CUTOFF = 1.5
-GAZE_1EURO_BETA       = 0.007
 
-# Soglia confidence: sotto questa soglia il frame gaze viene scartato.
-GAZE_CONFIDENCE_THRESHOLD = 0.6
+def _warn() -> None:
+    warnings.warn(_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
 
-# Cartella profili calibrazione
-PROFILES_DIR = os.path.join(_HERE, '..', 'profiles')
 
-# Modello L2CS-Net (appearance-based CNN, ONNX)
-L2CS_MODEL_PATH = os.path.join(MODELS_DIR, 'l2cs_net_gaze360.onnx')
+# ---------------------------------------------------------------------------
+# Legacy constants — backed by the settings singleton.
+# Accessing any of these triggers a DeprecationWarning at runtime.
+# ---------------------------------------------------------------------------
 
-# Pesi ensemble landmark vs. appearance
-GAZE_ENSEMBLE_LANDMARK_WEIGHT   = 0.3
-GAZE_ENSEMBLE_APPEARANCE_WEIGHT = 0.7
-
-# =============================================================================
-# HAND TRACKING
-# =============================================================================
-HAND_MAX_HANDS = 1
-HAND_MIN_DETECTION_CONFIDENCE = 0.7
-HAND_MIN_TRACKING_CONFIDENCE  = 0.5
-
-# Risoluzione di riferimento usata per scalare le velocità gesture nel feature extractor.
-# Le soglie come SWIPE_VELOCITY_THRESHOLD sono calibrate su questa risoluzione.
-# Aggiornare entrambi se si cambia la risoluzione della camera.
-FEATURE_REF_WIDTH  = FRAME_WIDTH   # 1280
-FEATURE_REF_HEIGHT = FRAME_HEIGHT  # 720
-
-# Soglie gesture
-SWIPE_VELOCITY_THRESHOLD = 200   # px/s (alla risoluzione FEATURE_REF_WIDTH x FEATURE_REF_HEIGHT)
-
-# Sensibilità drag mano → finestra.
-# 1.0 = 1:1 (tutta larghezza camera = tutta larghezza schermo)
-# 1.5 = default (più reattivo)
-DRAG_HAND_SENSITIVITY  = 1.5
-# Sensibilità resize mano → finestra (px schermo per px mano)
-RESIZE_HAND_SENSITIVITY = 2.0
-
-# =============================================================================
-# CLASSIFICATORE GESTURE
-# =============================================================================
-GESTURE_CONFIDENCE_THRESHOLD = 0.85
-GESTURE_LABELS = [
-    'GRAB', 'RELEASE', 'PINCH',
-    'SWIPE_LEFT', 'SWIPE_RIGHT', 'CLOSE_SIGN',
-    'SCROLL_UP', 'SCROLL_DOWN', 'MAXIMIZE',
-]
-MLP_MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_mlp.onnx')
-
-# =============================================================================
-# INTENT ENGINE / STATE MACHINE
-# =============================================================================
-DWELL_TIME_MS   = 400    # ms sguardo fisso per selezionare finestra
-READY_TIMEOUT_S = 3.0    # s max in stato READY senza gesture
-COOLDOWN_MS     = 300    # ms post-azione
-
-# =============================================================================
-# OVERLAY HUD
-# =============================================================================
-OVERLAY_GAZE_DOT_RADIUS  = 8
-OVERLAY_GAZE_DOT_COLOR   = (0, 220, 0)
-OVERLAY_TARGETING_COLOR  = (0, 100, 255)
-OVERLAY_READY_COLOR      = (255, 140, 0)
-
-# =============================================================================
-# LOGGING
-# =============================================================================
-LOG_LEVEL = 'INFO'
-LOG_FILE  = os.path.join(_HERE, '..', 'gazecontrol.log')
+def __getattr__(name: str) -> object:  # noqa: N807
+    _warn()
+    s = get_settings()
+    _map: dict[str, object] = {
+        # Camera
+        "CAMERA_INDEX": s.camera.index,
+        "FRAME_WIDTH": s.camera.width,
+        "FRAME_HEIGHT": s.camera.height,
+        "CAMERA_FPS": s.camera.fps,
+        # Gaze
+        "GAZE_MODEL_MODE": s.gaze.model_mode,
+        "GAZE_1EURO_MIN_CUTOFF": s.gaze.one_euro_min_cutoff,
+        "GAZE_1EURO_BETA": s.gaze.one_euro_beta,
+        "GAZE_CONFIDENCE_THRESHOLD": s.gaze.confidence_threshold,
+        "GAZE_ENSEMBLE_LANDMARK_WEIGHT": s.gaze.ensemble_weight_mlp,
+        "GAZE_ENSEMBLE_APPEARANCE_WEIGHT": s.gaze.ensemble_weight_l2cs,
+        # Paths
+        "MODELS_DIR": str(Paths.models()),
+        "PROFILES_DIR": str(Paths.profiles()),
+        "L2CS_MODEL_PATH": str(Paths.l2cs_model()),
+        "MLP_MODEL_PATH": str(Paths.gesture_mlp_model()),
+        "LOG_FILE": str(Paths.log_file()),
+        # Hand tracking
+        "HAND_MAX_HANDS": s.gesture.max_hands,
+        "HAND_MIN_DETECTION_CONFIDENCE": s.gesture.min_detection_confidence,
+        "HAND_MIN_TRACKING_CONFIDENCE": s.gesture.min_tracking_confidence,
+        "FEATURE_REF_WIDTH": s.camera.width,
+        "FEATURE_REF_HEIGHT": s.camera.height,
+        "SWIPE_VELOCITY_THRESHOLD": s.gesture.swipe_velocity_threshold,
+        "DRAG_HAND_SENSITIVITY": s.gesture.drag_sensitivity,
+        "RESIZE_HAND_SENSITIVITY": s.gesture.resize_sensitivity,
+        # Gesture classifier
+        "GESTURE_CONFIDENCE_THRESHOLD": s.gesture.confidence_threshold,
+        "GESTURE_LABELS": s.gesture_labels,
+        # Intent engine
+        "DWELL_TIME_MS": int(s.intent.dwell_time_s * 1000),
+        "READY_TIMEOUT_S": s.intent.ready_timeout_s,
+        "COOLDOWN_MS": int(s.intent.cooldown_s * 1000),
+        # Overlay
+        "OVERLAY_GAZE_DOT_RADIUS": s.overlay.gaze_dot_radius,
+        "OVERLAY_GAZE_DOT_COLOR": s.overlay.gaze_dot_color,
+        "OVERLAY_TARGETING_COLOR": s.overlay.targeting_color,
+        "OVERLAY_READY_COLOR": s.overlay.ready_color,
+        # Logging
+        "LOG_LEVEL": s.log_level,
+    }
+    if name in _map:
+        return _map[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
