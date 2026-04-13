@@ -6,7 +6,6 @@ import logging
 from gazecontrol.gesture.feature_extractor import GestureFeatureExtractor
 from gazecontrol.gesture.hand_detector import HandDetector
 from gazecontrol.gesture.rule_classifier import RuleClassifier
-from gazecontrol.intent.types import GestureLabel
 from gazecontrol.pipeline.context import FrameContext
 from gazecontrol.settings import get_settings
 

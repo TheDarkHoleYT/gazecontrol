@@ -1,5 +1,4 @@
-"""
-L2CS-Net ONNX Wrapper — modello appearance-based per gaze estimation.
+"""L2CS-Net ONNX Wrapper — modello appearance-based per gaze estimation.
 
 L2CS-Net (Abdelrahman & Hossny, 2022) predice yaw e pitch come combinazione di:
   - Classificazione su 90 bin angolari (softmax)
@@ -19,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 import numpy as np
 
@@ -33,8 +31,7 @@ _BIN_CENTERS = (np.arange(_NUM_BINS, dtype=np.float32) - _NUM_BINS / 2) * _BIN_S
 
 
 class L2CSModel:
-    """
-    Wrapper ONNX per L2CS-Net.
+    """Wrapper ONNX per L2CS-Net.
 
     Args:
         model_path : percorso al file .onnx.
@@ -45,7 +42,7 @@ class L2CSModel:
         self,
         model_path: str,
         providers: list[str] | None = None,
-    ):
+    ) -> None:
         self._session = None
         self._input_name = None
 
@@ -80,21 +77,21 @@ class L2CSModel:
                 os.path.basename(model_path),
                 self._session.get_providers()[0],
             )
-        except ImportError:
+        except ImportError as exc:
             raise ImportError(
                 "onnxruntime non installato. "
                 "Installare con: pip install onnxruntime-directml"
-            )
+            ) from exc
         except Exception:
             logger.exception("Errore caricamento L2CS-Net da %s", model_path)
 
     @property
     def is_loaded(self) -> bool:
+        """Return True when the ONNX inference session is ready."""
         return self._session is not None
 
-    def predict(self, face_crop: np.ndarray) -> Optional[tuple[float, float]]:
-        """
-        Predice yaw e pitch in GRADI dal crop del volto.
+    def predict(self, face_crop: np.ndarray) -> tuple[float, float] | None:
+        """Predice yaw e pitch in GRADI dal crop del volto.
 
         Args:
             face_crop : numpy array (1, 3, 224, 224) float32.

@@ -1,5 +1,4 @@
-"""
-OverlayWindow - Finestra trasparente always-on-top per il feedback HUD.
+"""OverlayWindow - Finestra trasparente always-on-top per il feedback HUD.
 DEVE essere creata nel main thread Qt.
 
 Thread-safety
@@ -18,9 +17,9 @@ Safe cross-thread update path:
 """
 
 try:
-    from PyQt6.QtWidgets import QWidget
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal
     from PyQt6.QtGui import QPainter
+    from PyQt6.QtWidgets import QWidget
     HAS_PYQT = True
 except ImportError:
     HAS_PYQT = False
@@ -32,7 +31,7 @@ class _OverlayWidget(QWidget if HAS_PYQT else object):
     # Signal emitted from any thread; received in the Qt main thread.
     data_changed = pyqtSignal(dict) if HAS_PYQT else None  # type: ignore[assignment]
 
-    def __init__(self):
+    def __init__(self) -> None:
         if not HAS_PYQT:
             return
         super().__init__()
@@ -48,7 +47,7 @@ class _OverlayWidget(QWidget if HAS_PYQT else object):
         self._timer.timeout.connect(self.update)
         self._timer.start(33)  # ~30fps
 
-    def _setup_window(self):
+    def _setup_window(self) -> None:
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -60,7 +59,7 @@ class _OverlayWidget(QWidget if HAS_PYQT else object):
         self.showFullScreen()
         self._apply_win32_clickthrough()
 
-    def _apply_win32_clickthrough(self):
+    def _apply_win32_clickthrough(self) -> None:
         """Imposta WS_EX_LAYERED | WS_EX_TRANSPARENT via Win32 API.
         Rende la finestra completamente invisibile agli input del mouse a livello OS.
         """
@@ -86,7 +85,7 @@ class _OverlayWidget(QWidget if HAS_PYQT else object):
         # update() is a QWidget method; calling it here is safe (main thread).
         self.update()
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:  # noqa: N802
         # _data is only ever written by _on_data_changed (main thread) and read
         # here (also main thread) — no locking needed.
         painter = QPainter(self)
@@ -96,14 +95,13 @@ class _OverlayWidget(QWidget if HAS_PYQT else object):
 
 
 class OverlayWindow:
-    """
-    Manages the HUD widget.  ``create_widget()`` must be called from the Qt
+    """Manages the HUD widget.  ``create_widget()`` must be called from the Qt
     main thread, after ``QApplication`` has been created.
 
     ``update()`` is safe to call from any thread.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._widget: _OverlayWidget | None = None
 
     def create_widget(self) -> None:

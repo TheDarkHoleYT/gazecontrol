@@ -1,2 +1,2 @@
-from .state_machine import IntentStateMachine
-from .window_selector import WindowSelector
+from .state_machine import IntentStateMachine as IntentStateMachine
+from .window_selector import WindowSelector as WindowSelector

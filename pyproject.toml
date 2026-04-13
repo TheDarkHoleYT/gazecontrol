@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gazecontrol"
-version = "0.3.0-dev"
+version = "0.3.0"
 description = "Eye tracking + hand-gesture desktop control"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -84,11 +84,15 @@ ignore = [
     "D100",   # Missing docstring in public module
     "D104",   # Missing docstring in public package
     "D107",   # Missing docstring in __init__
-    "ANN101", # Missing type annotation for self
-    "ANN102", # Missing type annotation for cls
     "S101",   # Use of assert (needed in tests)
     "S603",   # subprocess without shell=True OK
     "ANN401", # Dynamically typed expressions (Any) discouraged — allow for now
+    "N806",   # Mathematical convention: uppercase matrix variables (X, Xs, etc.)
+    "RUF001", # Ambiguous unicode in strings — Italian text intentional
+    "RUF002", # Ambiguous unicode in docstrings — Italian text intentional
+    "RUF003", # Ambiguous unicode in comments — Italian text intentional
+    "S110",   # try-except-pass — intentional in recovery paths
+    "E501",   # Line too long — URLs and long formulas exempt
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -98,8 +102,9 @@ convention = "google"
 known-first-party = ["gazecontrol"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN", "D", "S"]
+"tests/**" = ["ANN", "D", "S", "N", "PT"]
 "tools/**" = ["ANN", "D", "S"]
+"src/gazecontrol/main.py" = ["ANN", "D", "N", "E", "F", "S", "B", "SIM"]
 
 # ---------------------------------------------------------------------------
 # mypy — static type checking
@@ -125,7 +130,7 @@ warn_return_any = true
 # pytest
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "--tb=short -q"
 markers = [
@@ -140,7 +145,24 @@ markers = [
 [tool.coverage.run]
 source = ["gazecontrol"]
 branch = true
-omit = ["src/gazecontrol/__main__.py"]
+omit = [
+    # Legacy god-file (superseded by pipeline/ + cli.py)
+    "src/gazecontrol/main.py",
+    # Qt UI layer — requires a display, tested separately with pytest-qt
+    "src/gazecontrol/overlay/*",
+    # Calibration UI + orchestrator — require camera/Qt, integration-only
+    "src/gazecontrol/pipeline/calibration.py",
+    "src/gazecontrol/pipeline/orchestrator.py",
+    # Eyetrax monkey-patch shims — version-locked, not unit-testable
+    "src/gazecontrol/gaze/eyetrax_patches.py",
+    "src/gazecontrol/gaze/compat/eyetrax.py",
+    # Trivial entry point
+    "src/gazecontrol/__main__.py",
+    # Deprecated shim — covered transitively via imports
+    "src/gazecontrol/config.py",
+    # CLI entry point — requires Qt + argparse setup, tested via integration
+    "src/gazecontrol/cli.py",
+]
 
 [tool.coverage.report]
 show_missing = true

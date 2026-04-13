@@ -102,7 +102,7 @@ def wait_for_face(
             canvas[sh - 190 : sh - 10, sw - 330 : sw - 10] = preview
             color = (0, 200, 0) if face else (0, 0, 200)
             cv2.rectangle(canvas, (sw - 331, sh - 191), (sw - 9, sh - 9), color, 2)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         now = time.monotonic()
@@ -173,7 +173,7 @@ def run_calibration(profile_name: str = "default", adaptive: bool = False) -> No
     from eyetrax import GazeEstimator
     from eyetrax.calibration import run_dense_grid_calibration
 
-    from gazecontrol.gaze.compat.eyetrax import apply_patches, PatchError
+    from gazecontrol.gaze.compat.eyetrax import PatchError, apply_patches
 
     profile_dir = Paths.profiles()
     profile_path = profile_dir / f"{profile_name}.pkl"

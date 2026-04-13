@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from gazecontrol.intent.state_machine import IntentStateMachine
 from gazecontrol.settings import get_settings
 

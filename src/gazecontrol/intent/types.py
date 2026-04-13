@@ -6,10 +6,10 @@ through these typed containers instead of raw strings/dicts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import StrEnum
 
 
-class IntentState(str, Enum):
+class IntentState(StrEnum):
     """FSM states for the intent state machine."""
 
     IDLE = "IDLE"
@@ -20,7 +20,7 @@ class IntentState(str, Enum):
     COOLDOWN = "COOLDOWN"
 
 
-class GestureLabel(str, Enum):
+class GestureLabel(StrEnum):
     """Known gesture labels produced by classifiers."""
 
     GRAB = "GRAB"
@@ -35,7 +35,7 @@ class GestureLabel(str, Enum):
     UNKNOWN = "UNKNOWN"
 
     @classmethod
-    def from_str(cls, s: str | None) -> "GestureLabel":
+    def from_str(cls, s: str | None) -> GestureLabel:
         """Parse a string produced by a classifier, defaulting to UNKNOWN."""
         if s is None:
             return cls.UNKNOWN
@@ -45,7 +45,7 @@ class GestureLabel(str, Enum):
             return cls.UNKNOWN
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     """Window action types dispatched to WindowManager."""
 
     DRAG = "DRAG"
@@ -59,7 +59,7 @@ class ActionType(str, Enum):
     CLOSE_APP = "CLOSE_APP"  # special: shut down GazeControl itself
 
 
-class DragPhase(str, Enum):
+class DragPhase(StrEnum):
     """Sub-phase for DRAG and RESIZE actions."""
 
     START = "start"
@@ -82,6 +82,7 @@ class Action:
     data: dict = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        """Ensure data defaults to an empty dict when None is passed."""
         object.__setattr__(self, "data", self.data or {})
 
     def to_legacy_dict(self) -> dict:

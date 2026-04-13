@@ -1,5 +1,4 @@
-"""
-DriftCorrector — correzione automatica del drift di calibrazione.
+"""DriftCorrector — correzione automatica del drift di calibrazione.
 
 Tre strategie complementari applicate in sequenza:
 
@@ -22,8 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class DriftCorrector:
-    """
-    Corregge il drift del gaze point tramite strategie implicite.
+    """Corregge il drift del gaze point tramite strategie implicite.
 
     Args:
         screen_w, screen_h : dimensioni schermo in pixel.
@@ -41,7 +39,7 @@ class DriftCorrector:
         edge_correction_rate: float = 0.05,
         implicit_alpha: float = 0.08,
         max_correction_px: float = 120.0,
-    ):
+    ) -> None:
         self._sw = screen_w
         self._sh = screen_h
         self._margin = edge_margin_px
@@ -58,8 +56,7 @@ class DriftCorrector:
     # ------------------------------------------------------------------
 
     def correct(self, x: float, y: float) -> tuple[float, float]:
-        """
-        Applica la correzione drift al punto gaze grezzo.
+        """Applica la correzione drift al punto gaze grezzo.
 
         Returns:
             (x_corrected, y_corrected) clampato ai bordi schermo.
@@ -76,13 +73,13 @@ class DriftCorrector:
 
     def on_action(self, gaze_point: tuple[float, float],
                   target_window: dict) -> None:
-        """
-        Chiamato quando viene eseguita un'azione su una finestra.
-        Usa il centroide della finestra come ground truth per il drift.
+        """Update drift estimate after a user action on a window.
+
+        Uses the window centroid as gaze ground-truth.
 
         Args:
-            gaze_point    : punto gaze al momento dell'azione (dopo correct()).
-            target_window : dict con chiave 'rect' = (x, y, w, h).
+            gaze_point: Gaze point at action time (after ``correct()``).
+            target_window: Window info dict with ``'rect'`` = (x, y, w, h).
         """
         rect = target_window.get('rect')
         if not rect:
@@ -103,7 +100,7 @@ class DriftCorrector:
                      "offset=(%.1f,%.1f)", err_x, err_y,
                      self._offset_x, self._offset_y)
 
-    def reset(self):
+    def reset(self) -> None:
         """Azzera la correzione (utile dopo una nuova calibrazione)."""
         self._offset_x = 0.0
         self._offset_y = 0.0
@@ -111,6 +108,7 @@ class DriftCorrector:
 
     @property
     def offset(self) -> tuple[float, float]:
+        """Current drift offset as (dx, dy) in pixels."""
         return (self._offset_x, self._offset_y)
 
     # ------------------------------------------------------------------
@@ -118,9 +116,9 @@ class DriftCorrector:
     # ------------------------------------------------------------------
 
     def _update_edge_snapping(self, raw_x: float, raw_y: float) -> None:
-        """
-        Se il gaze grezzo supera i bordi dello schermo → aggiusta offset verso zero.
-        Questo rilevamento indica drift sistematico in quella direzione.
+        """Adjust offset toward zero when gaze crosses screen boundaries.
+
+        Boundary crossings indicate systematic drift in that direction.
         """
         if raw_x - self._offset_x < -self._margin:
             # Gaze va troppo a sinistra → correzione positiva su x
@@ -135,7 +133,7 @@ class DriftCorrector:
 
         self._clamp_offset()
 
-    def _clamp_offset(self):
+    def _clamp_offset(self) -> None:
         import math
         mag = math.hypot(self._offset_x, self._offset_y)
         if mag > self._max_corr and mag > 0:

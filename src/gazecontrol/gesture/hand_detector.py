@@ -74,7 +74,7 @@ class HandDetector:
         self,
         frame_rgb: object,  # np.ndarray RGB uint8
         ts_ms: int | None = None,
-    ) -> "_HandResult | None":
+    ) -> _HandResult | None:
         """Detect hand landmarks in *frame_rgb*.
 
         Args:

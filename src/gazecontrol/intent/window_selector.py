@@ -1,4 +1,9 @@
+"""WindowSelector — find the desktop window under the gaze point."""
+from __future__ import annotations
+
+import contextlib
 import time
+from typing import Any
 
 try:
     import win32gui
@@ -8,12 +13,14 @@ except ImportError:
 
 
 class WindowSelector:
-    def __init__(self, cache_interval=0.5):
-        self._cache_interval = cache_interval
-        self._cache = []
-        self._last_update = 0
+    """Enumerate visible windows and find the one under the current gaze point."""
 
-    def _refresh_cache(self):
+    def __init__(self, cache_interval: float = 0.5) -> None:
+        self._cache_interval = cache_interval
+        self._cache: list[dict] = []
+        self._last_update: float = 0
+
+    def _refresh_cache(self) -> None:
         now = time.time()
         if now - self._last_update < self._cache_interval and self._cache:
             return
@@ -21,9 +28,9 @@ class WindowSelector:
         if not HAS_WIN32:
             self._cache = []
             return
-        windows = []
+        windows: list[dict] = []
 
-        def enum_callback(hwnd, _):
+        def enum_callback(hwnd: int, _: Any) -> None:  # noqa: ANN401
             if not win32gui.IsWindowVisible(hwnd):
                 return
             title = win32gui.GetWindowText(hwnd)
@@ -44,13 +51,12 @@ class WindowSelector:
                 'rect': (x, y, w, h),
             })
 
-        try:
+        with contextlib.suppress(Exception):
             win32gui.EnumWindows(enum_callback, None)
-        except Exception:
-            pass
         self._cache = windows
 
-    def find_window(self, gaze_point):
+    def find_window(self, gaze_point: tuple[float, float] | None) -> dict | None:
+        """Return the topmost visible window under *gaze_point*, or None."""
         if not gaze_point:
             return None
         self._refresh_cache()

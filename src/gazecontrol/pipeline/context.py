@@ -24,9 +24,9 @@ class FrameContext:
     """
 
     # --- CaptureStage outputs ---
-    frame_bgr: "np.ndarray | None" = None
-    frame_rgb: "np.ndarray | None" = None
-    quality: "FrameQuality | None" = None
+    frame_bgr: np.ndarray | None = None
+    frame_rgb: np.ndarray | None = None
+    quality: FrameQuality | None = None
     capture_ok: bool = False
 
     # --- GazeStage outputs ---
@@ -36,7 +36,7 @@ class FrameContext:
     gaze_filtered: tuple[float, float] | None = None   # after 1€ filter
     gaze_corrected: tuple[float, float] | None = None  # after drift correction
     gaze_point: tuple[int, int] | None = None          # final integer pixel
-    fixation_event: "GazeEvent | None" = None
+    fixation_event: GazeEvent | None = None
     blink: bool = False
 
     # --- GestureStage outputs ---
@@ -47,7 +47,7 @@ class FrameContext:
 
     # --- IntentStage outputs ---
     target_window: Any = None  # HWND or window info dict
-    action: "Action | None" = None
+    action: Action | None = None
 
     # --- Timing ---
     t0: float = field(default=0.0)                     # monotonic timestamp at tick start

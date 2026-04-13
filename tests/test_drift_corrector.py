@@ -21,7 +21,7 @@ def test_implicit_recal_updates_offset():
     # gaze punta a (600, 400) ma finestra è centrata in (500, 400)
     target = {'rect': (400, 300, 200, 200)}  # centro = (500, 400)
     dc.on_action((600.0, 400.0), target)
-    ox, oy = dc.offset
+    ox, _oy = dc.offset
     # Offset dovrebbe essere positivo (gaze era troppo a destra)
     assert ox > 0, f"offset_x atteso >0, ottenuto {ox}"
 

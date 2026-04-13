@@ -10,18 +10,18 @@ OVERLAY_TARGETING_COLOR = _ov.targeting_color
 OVERLAY_READY_COLOR = _ov.ready_color
 
 try:
-    from PyQt6.QtCore import Qt, QRectF, QPointF
-    from PyQt6.QtGui import QPen, QBrush, QColor, QFont
+    from PyQt6.QtCore import QPointF, QRectF, Qt
+    from PyQt6.QtGui import QBrush, QColor, QFont, QPen
     HAS_PYQT = True
 except ImportError:
     HAS_PYQT = False
 
 
 class HUDRenderer:
-    def __init__(self):
+    def __init__(self) -> None:
         self._start_time = time.time()
 
-    def render(self, painter, data):
+    def render(self, painter, data) -> None:
         if not HAS_PYQT:
             return
 
@@ -45,7 +45,7 @@ class HUDRenderer:
         if gesture_id:
             self._draw_gesture_info(painter, gesture_id, gesture_confidence)
 
-    def _draw_gaze_dot(self, painter, gaze_point, is_calibrated=False):
+    def _draw_gaze_dot(self, painter, gaze_point, is_calibrated=False) -> None:
         elapsed = time.time() - self._start_time
         pulse = math.sin(elapsed * 4.0) * 3.0
         x, y = gaze_point
@@ -77,7 +77,7 @@ class HUDRenderer:
             painter.setPen(QPen(QColor(255, 160, 0, 180)))
             painter.drawText(int(x - 10), int(y - radius - 4), 'RAW')
 
-    def _draw_window_border(self, painter, target_window, color, thickness):
+    def _draw_window_border(self, painter, target_window, color, thickness) -> None:
         rect = target_window.get('rect')
         if not rect:
             return
@@ -88,7 +88,7 @@ class HUDRenderer:
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(QRectF(x, y, w, h))
 
-    def _draw_gesture_info(self, painter, gesture_id, confidence):
+    def _draw_gesture_info(self, painter, gesture_id, confidence) -> None:
         painter.setPen(QPen(QColor(255, 255, 255, 230)))
         font = QFont('Segoe UI', 12, QFont.Weight.Bold)
         painter.setFont(font)
@@ -112,7 +112,7 @@ class HUDRenderer:
         painter.setBrush(QBrush(QColor(r, g, 50, 220)))
         painter.drawRect(QRectF(x, bar_y, bar_w * conf, bar_h))
 
-    def _draw_state_label(self, painter, state):
+    def _draw_state_label(self, painter, state) -> None:
         font = QFont('Segoe UI', 9)
         painter.setFont(font)
         painter.setPen(QPen(QColor(200, 200, 200, 200)))

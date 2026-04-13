@@ -1,5 +1,4 @@
-"""
-Fixation & Saccade Detector — algoritmo I-VT (Velocity-Threshold Identification).
+"""Fixation & Saccade Detector — algoritmo I-VT (Velocity-Threshold Identification).
 
 Classifica ogni campione gaze in una di tre categorie:
   - FIXATION  : sguardo fermo su un punto (bassa velocità angolare < 30°/s)
@@ -18,12 +17,13 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Deque
+from dataclasses import dataclass
 
 
 @dataclass
 class GazeEvent:
+    """Classified gaze event from the I-VT fixation detector."""
+
     type: str           # 'fixation' | 'saccade' | 'pursuit' | 'blink'
     point: tuple[float, float]
     velocity_px_s: float
@@ -32,8 +32,7 @@ class GazeEvent:
 
 
 class FixationDetector:
-    """
-    Classifica ogni campione gaze in fixation/saccade/pursuit via I-VT.
+    """Classifica ogni campione gaze in fixation/saccade/pursuit via I-VT.
 
     Args:
         screen_px_per_degree : pixel per grado visivo (default 44 ≈ 24" FHD a 60cm).
@@ -53,7 +52,7 @@ class FixationDetector:
         fixation_vel_thr: float = 30.0,
         saccade_vel_thr: float = 100.0,
         fixation_history_ms: float = 150.0,
-    ):
+    ) -> None:
         self._px_per_deg = screen_px_per_degree
         self._fix_thr = fixation_vel_thr * screen_px_per_degree   # → px/s
         self._sac_thr = saccade_vel_thr * screen_px_per_degree    # → px/s
@@ -63,23 +62,23 @@ class FixationDetector:
         self._prev_ts: float | None = None
 
         # Buffer per centroide fixation
-        self._fix_buffer: Deque[tuple[float, float, float]] = deque()  # (x, y, ts)
+        self._fix_buffer: deque[tuple[float, float, float]] = deque()  # (x, y, ts)
 
         self._current_type = self.FIXATION
         self._current_start = time.monotonic()
 
     def update(self, x: float, y: float, timestamp: float | None = None,
                is_blink: bool = False) -> GazeEvent:
-        """
-        Aggiorna con un nuovo campione gaze.
+        """Update the detector with a new gaze sample.
 
         Args:
-            x, y      : coordinate gaze in pixel schermo.
-            timestamp : timestamp in secondi (default: time.monotonic()).
-            is_blink  : True se il frame è classificato come blink.
+            x: Gaze x-coordinate in screen pixels.
+            y: Gaze y-coordinate in screen pixels.
+            timestamp: Time in seconds (default: ``time.monotonic()``).
+            is_blink: True when the frame is classified as a blink.
 
         Returns:
-            GazeEvent con tipo, punto, velocità e durata dell'evento corrente.
+            GazeEvent with type, point, velocity and duration of the current event.
         """
         if timestamp is None:
             timestamp = time.monotonic()
@@ -145,7 +144,8 @@ class FixationDetector:
             centroid=centroid,
         )
 
-    def reset(self):
+    def reset(self) -> None:
+        """Reset detector state (e.g. after calibration or profile change)."""
         self._prev_point = None
         self._prev_ts = None
         self._fix_buffer.clear()

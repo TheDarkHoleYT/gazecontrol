@@ -11,10 +11,10 @@ Thread-safety:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
-from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -158,14 +158,14 @@ class FrameGrabber:
 
     # ------------------------------------------------------------------
 
-    def read_bgr(self) -> Tuple[bool, Optional[np.ndarray]]:
+    def read_bgr(self) -> tuple[bool, np.ndarray | None]:
         """Return the latest raw BGR frame (copy)."""
         with self._frame_lock:
             if self._frame is None:
                 return False, None
             return True, self._frame.copy()
 
-    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+    def read(self) -> tuple[bool, np.ndarray | None]:
         """Return the latest frame pre-processed: flipped, resized, RGB.
 
         Note: This calls ``read_bgr()`` internally so both methods always
@@ -190,10 +190,8 @@ class FrameGrabber:
         """Attempt to reopen the camera after a disconnect."""
         with self._cap_lock:
             if self._cap is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self._cap.release()
-                except Exception:  # noqa: BLE001
-                    pass
                 self._cap = None
 
         time.sleep(1.0)
@@ -228,15 +226,17 @@ class FrameGrabber:
         return self._frame_count
 
     @property
-    def actual_resolution(self) -> Tuple[int, int]:
+    def actual_resolution(self) -> tuple[int, int]:
         """Last known camera resolution (updated by capture loop, thread-safe)."""
         return self._actual_w, self._actual_h
 
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "FrameGrabber":
+    def __enter__(self) -> FrameGrabber:
+        """Start capture on context entry."""
         self.start()
         return self
 
     def __exit__(self, *args: object) -> None:
+        """Stop capture on context exit."""
         self.stop()

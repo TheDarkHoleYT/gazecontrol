@@ -1,5 +1,4 @@
-"""
-FaceCropper — estrae un crop del volto 224×224 per L2CS-Net.
+"""FaceCropper — estrae un crop del volto 224×224 per L2CS-Net.
 
 Usa MediaPipe Face Detection (leggero, non il Face Landmarker pesante) per
 localizzare il volto, poi ritaglia e normalizza secondo i parametri di training
@@ -15,7 +14,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-
 # ImageNet normalization (usata da L2CS-Net/ResNet-50)
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -25,8 +23,7 @@ _FACE_PAD = 0.4
 
 
 class FaceCropper:
-    """
-    Ritaglia e normalizza il volto da un frame BGR per input a L2CS-Net.
+    """Ritaglia e normalizza il volto da un frame BGR per input a L2CS-Net.
 
     Utilizzo con landmarks MediaPipe (metodo preferito):
         crop = cropper.crop_from_landmarks(frame_bgr, face_landmarks_478)
@@ -42,8 +39,7 @@ class FaceCropper:
         frame_bgr: np.ndarray,
         landmarks: np.ndarray,
     ) -> np.ndarray | None:
-        """
-        Ritaglia il volto usando landmarks MediaPipe (478 punti, coordinate norm.).
+        """Ritaglia il volto usando landmarks MediaPipe (478 punti, coordinate norm.).
 
         Args:
             frame_bgr  : frame originale BGR.
@@ -71,8 +67,7 @@ class FaceCropper:
         frame_bgr: np.ndarray,
         face_rect: tuple[float, float, float, float] | None = None,
     ) -> np.ndarray | None:
-        """
-        Ritaglia il volto da un rettangolo normalizzato oppure assume centro frame.
+        """Ritaglia il volto da un rettangolo normalizzato oppure assume centro frame.
 
         Args:
             frame_bgr : frame BGR.

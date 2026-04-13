@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import importlib.resources
 import os
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 import platformdirs
@@ -25,17 +25,17 @@ APP_NAME = "gazecontrol"
 APP_AUTHOR = "GazeControl"
 
 
-@lru_cache(maxsize=None)
+@cache
 def _user_config_base() -> Path:
     return Path(platformdirs.user_config_dir(APP_NAME, APP_AUTHOR))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _user_log_base() -> Path:
     return Path(platformdirs.user_log_dir(APP_NAME, APP_AUTHOR))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _package_root() -> Path:
     """Root of the installed/editable package (contains src/ in dev mode)."""
     try:
@@ -43,7 +43,7 @@ def _package_root() -> Path:
         pkg_path = Path(str(ref))  # editable: .../src/gazecontrol
         # go up to the project root (src/gazecontrol → src → project)
         return pkg_path.parent.parent
-    except Exception:  # noqa: BLE001
+    except Exception:
         return Path.cwd()
 
 
@@ -57,10 +57,7 @@ class Paths:
     @staticmethod
     def profiles(override: str | os.PathLike[str] | None = None) -> Path:
         """Return the profiles directory, creating it if needed."""
-        if override:
-            path = Path(override)
-        else:
-            path = _user_config_base() / "profiles"
+        path = Path(override) if override else _user_config_base() / "profiles"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -86,10 +83,7 @@ class Paths:
             path = Path(override)
         else:
             dev_models = _package_root() / "models"
-            if dev_models.exists():
-                path = dev_models
-            else:
-                path = _user_config_base() / "models"
+            path = dev_models if dev_models.exists() else _user_config_base() / "models"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

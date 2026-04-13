@@ -128,8 +128,8 @@ class GazeMapper:
         X = self._build_features(angles, hp)
         Xs = (X - self._scaler_mean) / self._scaler_scale
 
-        px_x = float(Xs @ self._coef_x + self._intercept_x)  # type: ignore[operator]
-        px_y = float(Xs @ self._coef_y + self._intercept_y)  # type: ignore[operator]
+        px_x = float((Xs @ self._coef_x).item() + self._intercept_x)  # type: ignore[operator]
+        px_y = float((Xs @ self._coef_y).item() + self._intercept_y)  # type: ignore[operator]
 
         px_x = max(0.0, min(float(self._sw - 1), px_x))
         px_y = max(0.0, min(float(self._sh - 1), px_y))
@@ -236,7 +236,7 @@ class GazeMapper:
         Returns:
             True if migration succeeded, False otherwise.
         """
-        import pickle  # noqa: S403 — only used for migration
+        import pickle
 
         pkl_path = Path(pkl_path)
         try:
@@ -305,7 +305,7 @@ class GazeMapper:
 
     def _loo_error(
         self,
-        X: np.ndarray,
+        X: np.ndarray,  # noqa: N803
         y_x: np.ndarray,
         y_y: np.ndarray,
     ) -> float:

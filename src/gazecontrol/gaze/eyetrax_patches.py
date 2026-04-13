@@ -8,6 +8,6 @@ warnings.warn(
     stacklevel=2,
 )
 
-from gazecontrol.gaze.compat.eyetrax import PatchError, apply_patches  # noqa: F401, E402
+from gazecontrol.gaze.compat.eyetrax import PatchError, apply_patches  # noqa: E402
 
-__all__ = ["apply_patches", "PatchError"]
+__all__ = ["PatchError", "apply_patches"]

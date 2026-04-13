@@ -1,6 +1,5 @@
-"""
-GazeControl - Entry Point
-Pipeline: EyeTrax (gaze) + MediaPipe (gesture) → Intent FSM → Window Manager
+"""GazeControl - Entry Point
+Pipeline: EyeTrax (gaze) + MediaPipe (gesture) → Intent FSM → Window Manager.
 
 Enterprise mode:
   - Gaze ensemble: TinyMLP 256→128→64 (30%) + L2CS-Net CNN (70%)
@@ -13,39 +12,40 @@ Enterprise mode:
   - Requisito: models/l2cs_net_gaze360.onnx (eseguire tools/download_l2cs.py)
 """
 import os
+
 os.environ.setdefault('GLOG_minloglevel', '3')
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
 
-import sys
-import logging
-import time
 import argparse
+import logging
+import sys
 import threading
-import cv2
+import time
 
-import gazecontrol.config as config
+import cv2
 from eyetrax import GazeEstimator
 from eyetrax.calibration import run_dense_grid_calibration
 from eyetrax.calibration.adaptive import run_adaptive_calibration
-from gazecontrol.gaze.eyetrax_patches import apply_patches, PatchError
 
+import gazecontrol.config as config
 from gazecontrol.capture.frame_grabber import FrameGrabber
 from gazecontrol.capture.frame_preprocessor import FramePreprocessor
-from gazecontrol.gesture.hand_detector import HandDetector
+from gazecontrol.gaze.drift_corrector import DriftCorrector
+from gazecontrol.gaze.eyetrax_patches import PatchError, apply_patches
+from gazecontrol.gaze.face_crop import FaceCropper
+from gazecontrol.gaze.fixation_detector import FixationDetector
+from gazecontrol.gaze.gaze_mapper import GazeMapper
+from gazecontrol.gaze.l2cs_model import L2CSModel
+from gazecontrol.gaze.one_euro_filter import OneEuroFilter
 from gazecontrol.gesture.feature_extractor import GestureFeatureExtractor
-from gazecontrol.gesture.rule_classifier import RuleClassifier
+from gazecontrol.gesture.hand_detector import HandDetector
 from gazecontrol.gesture.mlp_classifier import MLPClassifier
+from gazecontrol.gesture.rule_classifier import RuleClassifier
 from gazecontrol.intent.state_machine import IntentStateMachine
 from gazecontrol.intent.window_selector import WindowSelector
-from gazecontrol.window_manager.windows_mgr import WindowsManager
 from gazecontrol.overlay.overlay_window import OverlayWindow
-from gazecontrol.gaze.one_euro_filter import OneEuroFilter
-from gazecontrol.gaze.fixation_detector import FixationDetector
-from gazecontrol.gaze.drift_corrector import DriftCorrector
-from gazecontrol.gaze.l2cs_model import L2CSModel
-from gazecontrol.gaze.face_crop import FaceCropper
-from gazecontrol.gaze.gaze_mapper import GazeMapper
 from gazecontrol.utils.profiler import PipelineProfiler
+from gazecontrol.window_manager.windows_mgr import WindowsManager
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
@@ -193,7 +193,7 @@ def _wait_for_face_patched(cap, gaze_estimator, sw, sh, dur: int = 2) -> bool:
             return False
 
 
-def run_calibration(profile_name: str = 'default', adaptive: bool = False):
+def run_calibration(profile_name: str = 'default', adaptive: bool = False) -> None:
     """Avvia la calibrazione EyeTrax con TinyMLP e salva il profilo.
 
     adaptive=False  →  griglia densa 5×5 (25 punti, ~50 secondi)
@@ -234,7 +234,7 @@ def run_calibration(profile_name: str = 'default', adaptive: bool = False):
 class GazeControlPipeline:
     """Orchestra tutti i moduli della pipeline in un loop a ~30fps."""
 
-    def __init__(self, profile_name: str = 'default', show_overlay: bool = True):
+    def __init__(self, profile_name: str = 'default', show_overlay: bool = True) -> None:
         self.profile_name = profile_name
         self.show_overlay = show_overlay
         self._running = False
@@ -342,7 +342,7 @@ class GazeControlPipeline:
 
     # ------------------------------------------------------------------
 
-    def start(self):
+    def start(self) -> None:
         if not self.grabber.start():
             logger.error("Impossibile avviare la camera.")
             return
@@ -360,9 +360,9 @@ class GazeControlPipeline:
             finally:
                 self.stop()
 
-    def _start_with_qt(self):
-        from PyQt6.QtWidgets import QApplication
+    def _start_with_qt(self) -> None:
         from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
 
         app = QApplication.instance() or QApplication(sys.argv)
         self.overlay.create_widget()
@@ -381,7 +381,7 @@ class GazeControlPipeline:
 
     # ------------------------------------------------------------------
 
-    def _main_loop(self):
+    def _main_loop(self) -> None:
         """Loop principale ~30fps con enterprise gaze pipeline."""
         # Inizializza EyeTrax IN QUESTO THREAD (thread safety: MediaPipe VIDEO mode)
         try:
@@ -562,14 +562,14 @@ class GazeControlPipeline:
 
     # ------------------------------------------------------------------
 
-    def _check_interrupt(self):
+    def _check_interrupt(self) -> None:
         if not self._running:
             from PyQt6.QtWidgets import QApplication
             app = QApplication.instance()
             if app:
                 app.quit()
 
-    def stop(self):
+    def stop(self) -> None:
         self._running = False
         self.grabber.stop()
         self.hand_detector.close()
@@ -580,7 +580,7 @@ class GazeControlPipeline:
 
 # ------------------------------------------------------------------
 
-def main():
+def main() -> None:
     import signal
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 

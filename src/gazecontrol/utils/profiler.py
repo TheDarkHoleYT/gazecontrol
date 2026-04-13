@@ -1,5 +1,4 @@
-"""
-Pipeline Latency Profiler — misura il tempo di ogni stage del loop principale.
+"""Pipeline Latency Profiler — misura il tempo di ogni stage del loop principale.
 
 Uso:
     profiler = PipelineProfiler(log_every_n=300)  # logga ogni 10s a 30fps
@@ -23,15 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineProfiler:
-    """
-    Misura la latenza (ms) di ogni named stage con rolling window.
+    """Misura la latenza (ms) di ogni named stage con rolling window.
 
     Attributes:
         log_every_n : log periodico ogni N frame.
         window_size : campioni tenuti per calcolare la media rolling.
     """
 
-    def __init__(self, log_every_n: int = 300, window_size: int = 60):
+    def __init__(self, log_every_n: int = 300, window_size: int = 60) -> None:
         self._log_every = log_every_n
         self._tick_count = 0
         self._stages: dict[str, deque[float]] = defaultdict(
@@ -49,13 +47,13 @@ class PipelineProfiler:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             self._stages[name].append(elapsed_ms)
 
-    def tick(self):
+    def tick(self) -> None:
         """Chiama una volta per frame. Logga le statistiche ogni log_every_n frame."""
         self._tick_count += 1
         if self._tick_count % self._log_every == 0:
             self._log_stats()
 
-    def _log_stats(self):
+    def _log_stats(self) -> None:
         if not self._stages:
             return
         parts = []

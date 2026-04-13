@@ -26,7 +26,7 @@ def _warn() -> None:
 # Accessing any of these triggers a DeprecationWarning at runtime.
 # ---------------------------------------------------------------------------
 
-def __getattr__(name: str) -> object:  # noqa: N807
+def __getattr__(name: str) -> object:
     _warn()
     s = get_settings()
     _map: dict[str, object] = {

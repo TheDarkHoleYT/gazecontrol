@@ -1,5 +1,5 @@
 """Test per FixationDetector (I-VT)."""
-from gazecontrol.gaze.fixation_detector import FixationDetector, GazeEvent
+from gazecontrol.gaze.fixation_detector import FixationDetector
 
 
 def _make_detector():

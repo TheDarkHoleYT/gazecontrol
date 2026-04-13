@@ -33,7 +33,7 @@ try:
 except ImportError:
     _QT_AVAILABLE = False
     QThread = object  # type: ignore[misc,assignment]
-    pyqtSignal = None  # type: ignore[assignment]
+    pyqtSignal = None  # type: ignore[assignment]  # noqa: N816
 
 
 class GazeControlPipeline(QThread):  # type: ignore[misc]

@@ -7,10 +7,8 @@ Fixes vs the old main.py approach:
 from __future__ import annotations
 
 import logging
-import time
 
 import cv2
-import numpy as np
 
 from gazecontrol.capture.frame_grabber import FrameGrabber
 from gazecontrol.capture.frame_preprocessor import FramePreprocessor

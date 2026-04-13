@@ -1,5 +1,4 @@
-"""
-Isolates the eyetrax monkey-patching required to make calibration work on Windows.
+"""Isolates the eyetrax monkey-patching required to make calibration work on Windows.
 
 eyetrax uses its own camera-open logic (which often picks MSMF on Windows and hangs),
 and its own face-detection waiting routine (which uses a pure-black background that
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ def apply_patches(
         Replacement for ``eyetrax.calibration.common.wait_for_face_and_countdown``.
         Signature: ``(cap, gaze_estimator, screen_w, screen_h, dur) -> bool``.
 
-    Raises
+    Raises:
     ------
     PatchError
         If any target module cannot be imported.  This is a hard failure: without the

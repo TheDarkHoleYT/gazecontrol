@@ -1,5 +1,4 @@
 """Test per OneEuroFilter."""
-import math
 
 from gazecontrol.gaze.one_euro_filter import OneEuroFilter
 

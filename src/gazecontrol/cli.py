@@ -40,7 +40,7 @@ def _detect_screen() -> tuple[int, int]:
         user32 = ctypes.windll.user32
         user32.SetProcessDPIAware()
         return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 1920, 1080
 
 
@@ -170,7 +170,7 @@ def main() -> None:
 
 
 try:
-    from PyQt6.QtCore import QThread as _QT  # noqa: F401
+    from PyQt6.QtCore import QThread as _QT  # noqa: F401,N814
     _QT_AVAILABLE = True
 except ImportError:
     _QT_AVAILABLE = False

@@ -7,7 +7,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased] — v0.3.0-dev
+## [0.3.0] — 2026-04-13
 
 ### Added
 - `src/` package layout — proper PEP 517 structure

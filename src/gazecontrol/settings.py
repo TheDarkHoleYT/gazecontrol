@@ -15,7 +15,12 @@ import logging
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,7 @@ class GazeSettings(BaseSettings):
         return max(0.0, min(1.0, float(v)))
 
     @model_validator(mode="after")
-    def _weights_sum(self) -> "GazeSettings":
+    def _weights_sum(self) -> GazeSettings:
         total = self.ensemble_weight_mlp + self.ensemble_weight_l2cs
         if abs(total - 1.0) > 1e-6:
             logger.warning(
@@ -157,6 +162,22 @@ class AppSettings(BaseSettings):
     overlay: OverlaySettings = Field(default_factory=OverlaySettings)
 
     log_level: str = Field(default="INFO")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Configure TOML + env-var settings sources."""
+        return (
+            init_settings,
+            env_settings,
+            TomlConfigSettingsSource(settings_cls),
+        )
 
     # Gesture label list — kept at app level for cross-module use
     gesture_labels: list[str] = Field(

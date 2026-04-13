@@ -19,6 +19,7 @@ class IntentStage:
 
     @property
     def state(self) -> str:
+        """Current FSM state name."""
         return self._state_machine.state
 
     def process(self, ctx: FrameContext) -> FrameContext:

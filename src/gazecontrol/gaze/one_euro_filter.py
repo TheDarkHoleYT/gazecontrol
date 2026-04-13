@@ -1,5 +1,4 @@
-"""
-One Euro Filter — filtro adattivo per eye tracking.
+"""One Euro Filter — filtro adattivo per eye tracking.
 
 Algoritmo: Casiez et al. (2012) "1€ Filter: A Simple Speed-based Low-pass Filter
 for Noisy Input in Interactive Systems".
@@ -18,7 +17,7 @@ import time
 
 
 class _LowPassFilter:
-    def __init__(self, cutoff: float, freq: float):
+    def __init__(self, cutoff: float, freq: float) -> None:
         self._freq = freq
         self._cutoff = cutoff
         self._x = None
@@ -42,8 +41,7 @@ class _LowPassFilter:
 
 
 class OneEuroFilter:
-    """
-    Filtra un segnale scalare con il 1€ Filter.
+    """Filtra un segnale scalare con il 1€ Filter.
 
     Uso tipico (un'istanza per asse x, un'altra per asse y):
 
@@ -61,7 +59,7 @@ class OneEuroFilter:
         min_cutoff: float = 1.5,
         beta: float = 0.007,
         d_cutoff: float = 1.0,
-    ):
+    ) -> None:
         self._freq = freq
         self._min_cutoff = min_cutoff
         self._beta = beta
@@ -71,8 +69,7 @@ class OneEuroFilter:
         self._last_ts: float | None = None
 
     def filter(self, x: float, timestamp: float | None = None) -> float:
-        """
-        Applica il filtro al valore x.
+        """Applica il filtro al valore x.
 
         Args:
             x         : valore raw da filtrare.
@@ -105,7 +102,7 @@ class OneEuroFilter:
 
         return self._x_filter.step(x, cutoff)
 
-    def reset(self):
+    def reset(self) -> None:
         """Resetta lo stato interno (utile dopo un blink lungo o gap di dati)."""
         self._x_filter._x = None
         self._dx_filter._x = None
