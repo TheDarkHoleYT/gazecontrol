@@ -1,10 +1,13 @@
 import math
 import time
 
-from gazecontrol.config import (
-    OVERLAY_GAZE_DOT_RADIUS, OVERLAY_GAZE_DOT_COLOR,
-    OVERLAY_TARGETING_COLOR, OVERLAY_READY_COLOR,
-)
+from gazecontrol.settings import get_settings
+
+_ov = get_settings().overlay
+OVERLAY_GAZE_DOT_RADIUS = _ov.gaze_dot_radius
+OVERLAY_GAZE_DOT_COLOR = _ov.gaze_dot_color
+OVERLAY_TARGETING_COLOR = _ov.targeting_color
+OVERLAY_READY_COLOR = _ov.ready_color
 
 try:
     from PyQt6.QtCore import Qt, QRectF, QPointF
