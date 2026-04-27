@@ -13,13 +13,15 @@ authors = [{ name = "Ciro" }]
 keywords = ["hand-gesture", "gesture", "accessibility", "desktop", "pinch"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: Microsoft :: Windows",
-    "Topic :: Accessibility",
+    "Topic :: Adaptive Technologies",
     "Typing :: Typed",
 ]
 dependencies = [
