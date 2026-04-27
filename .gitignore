@@ -35,6 +35,9 @@ logs/
 profiles/*.pkl
 profiles/*.sha256
 models/*.onnx
+models/*.pkl
+models/*.task
+models/*.tflite
 baselines/*.json
 
 # IDE / editor
