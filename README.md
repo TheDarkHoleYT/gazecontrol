@@ -125,4 +125,9 @@ diagram and ADRs.
 
 ## License
 
-MIT.
+GazeControl is released under the **MIT License** — see
+[`LICENSE`](LICENSE).
+
+Bundled or downloaded components from third-party projects (L2CS-Net,
+MediaPipe Tasks) retain their upstream licenses — see
+[`NOTICE.md`](NOTICE.md) for attributions and full text.
