@@ -72,6 +72,7 @@ def test_execute_dispatches_drag(manager_mocks):
     win32gui.MoveWindow.assert_not_called()
 
 
+@pytest.mark.win32
 def test_execute_scroll_up(manager_mocks, monkeypatch):
     """SCROLL_UP must use SendInput (not PostMessage) to work in Chromium/Electron."""
     mgr, _win32gui, _ = manager_mocks

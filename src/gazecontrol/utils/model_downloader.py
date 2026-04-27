@@ -151,7 +151,7 @@ def _download(
         logger.info("Downloading %s from %s (timeout=%ds)", model_name, url, timeout)
         try:
             with (
-                urllib.request.urlopen(  # noqa: S310 (URL validated as HTTPS above)
+                urllib.request.urlopen(  # noqa: S310  # nosec B310 (URL validated as HTTPS above)
                     url, timeout=timeout
                 ) as response,
                 part.open("wb") as fh,

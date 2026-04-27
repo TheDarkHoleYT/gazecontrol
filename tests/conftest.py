@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 from collections.abc import Generator
 
 import numpy as np
@@ -13,6 +14,15 @@ from hypothesis import settings as hyp_settings
 
 from gazecontrol.settings import AppSettings, reset_settings
 from tests.helpers import FakeVideoCapture, make_fake_hand_result
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Auto-skip @pytest.mark.win32 tests on non-Windows platforms."""
+    if sys.platform != "win32":
+        skip_win32 = pytest.mark.skip(reason="Win32-only test (ctypes.windll absent)")
+        for item in items:
+            if "win32" in item.keywords:
+                item.add_marker(skip_win32)
 
 # ---------------------------------------------------------------------------
 # Determinism — pin all random sources before any test imports modules that

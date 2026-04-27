@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from gazecontrol.gesture.fingertip_mapper import FingertipMapper, VirtualDesktop
 
 
@@ -104,6 +106,7 @@ def test_desktop_property():
     assert m.desktop is d
 
 
+@pytest.mark.win32
 def test_virtual_desktop_from_win32_fallback():
     """from_win32 falls back to 1920×1080 when Win32 is unavailable."""
     import unittest.mock as mock
