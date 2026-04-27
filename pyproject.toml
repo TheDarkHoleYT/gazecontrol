@@ -142,6 +142,21 @@ warn_return_any = true
 warn_redundant_casts = true
 warn_unreachable = true
 
+# Windows-only modules: validated by mypy on Windows runners.
+# On Linux pywin32 stubs are absent → ctypes.windll / win32* resolve to Any
+# and trigger warn_return_any. Skip them on non-Windows mypy runs.
+[[tool.mypy.overrides]]
+module = [
+    "gazecontrol.window_manager.windows_mgr",
+    "gazecontrol.window_manager.launcher",
+    "gazecontrol.interaction.window_selector",
+    "gazecontrol.interaction.window_hit_tester",
+    "gazecontrol.gesture.fingertip_mapper",
+    "gazecontrol.overlay.overlay_window",
+    "gazecontrol.cli",
+]
+ignore_errors = true
+
 # ---------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------

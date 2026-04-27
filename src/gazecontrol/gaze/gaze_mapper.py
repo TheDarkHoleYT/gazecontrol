@@ -263,7 +263,7 @@ class GazeMapper:
         pkl_path = Path(pkl_path)
         try:
             with pkl_path.open("rb") as fh:
-                data = pickle.load(fh)  # noqa: S301
+                data = pickle.load(fh)  # noqa: S301  # nosec B301
         except Exception:
             logger.exception("GazeMapper: could not load legacy pkl %s", pkl_path)
             return False
