@@ -14,10 +14,12 @@ restituisce sempre None (il sistema usa solo il path eyetrax landmark-based).
 
 Download e conversione: vedere tools/download_l2cs.py
 """
+
 from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 import numpy as np
 
@@ -57,20 +59,27 @@ class L2CSModel:
 
             if providers is None:
                 available = ort.get_available_providers()
-                # Preferisci GPU DirectML su Windows, poi CUDA, poi CPU
-                for pref in ('DmlExecutionProvider', 'CUDAExecutionProvider',
-                             'CPUExecutionProvider'):
+                # Preferisci GPU DirectML su Windows, poi CUDA, poi CPU.
+                # Aggiungi CPU come fallback solo se il primario non e' gia' CPU
+                # (evita warning "Duplicate provider 'CPUExecutionProvider'").
+                for pref in (
+                    "DmlExecutionProvider",
+                    "CUDAExecutionProvider",
+                    "CPUExecutionProvider",
+                ):
                     if pref in available:
-                        providers = [pref, 'CPUExecutionProvider']
+                        providers = (
+                            [pref, "CPUExecutionProvider"]
+                            if pref != "CPUExecutionProvider"
+                            else [pref]
+                        )
                         break
                 else:
-                    providers = ['CPUExecutionProvider']
+                    providers = ["CPUExecutionProvider"]
 
             so = ort.SessionOptions()
             so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            self._session = ort.InferenceSession(
-                model_path, sess_options=so, providers=providers
-            )
+            self._session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
             self._input_name = self._session.get_inputs()[0].name
             logger.info(
                 "L2CS-Net caricato: %s | provider: %s",
@@ -79,8 +88,7 @@ class L2CSModel:
             )
         except ImportError as exc:
             raise ImportError(
-                "onnxruntime non installato. "
-                "Installare con: pip install onnxruntime-directml"
+                "onnxruntime non installato. Installare con: pip install onnxruntime-directml"
             ) from exc
         except Exception:
             logger.exception("Errore caricamento L2CS-Net da %s", model_path)
@@ -90,7 +98,7 @@ class L2CSModel:
         """Return True when the ONNX inference session is ready."""
         return self._session is not None
 
-    def predict(self, face_crop: np.ndarray) -> tuple[float, float] | None:
+    def predict(self, face_crop: np.ndarray[Any, Any]) -> tuple[float, float] | None:
         """Predice yaw e pitch in GRADI dal crop del volto.
 
         Args:
@@ -103,24 +111,22 @@ class L2CSModel:
             return None
 
         try:
-            outputs = self._session.run(
-                None, {self._input_name: face_crop}
-            )
+            outputs = self._session.run(None, {self._input_name: face_crop})
             # L2CS-Net output: [yaw_logits (1,90), pitch_logits (1,90)]
             # oppure [yaw_deg (1,1), pitch_deg (1,1)] a seconda della versione ONNX
             if len(outputs) == 2:
                 out0, out1 = outputs[0], outputs[1]
                 if out0.shape[-1] == _NUM_BINS or out0.shape[-1] > 2:
                     # Output logits su 90 bin → weighted average via softmax
-                    yaw_deg   = self._bins_to_angle(out0[0])
+                    yaw_deg = self._bins_to_angle(out0[0])
                     pitch_deg = self._bins_to_angle(out1[0])
                 else:
                     # Output scalare diretto
-                    yaw_deg   = float(out0.flat[0])
+                    yaw_deg = float(out0.flat[0])
                     pitch_deg = float(out1.flat[0])
             elif len(outputs) == 1:
                 # Formato alternativo: singolo output (1, 2)
-                yaw_deg   = float(outputs[0][0, 0])
+                yaw_deg = float(outputs[0][0, 0])
                 pitch_deg = float(outputs[0][0, 1])
             else:
                 return None
@@ -132,7 +138,7 @@ class L2CSModel:
             return None
 
     @staticmethod
-    def _bins_to_angle(logits: np.ndarray) -> float:
+    def _bins_to_angle(logits: np.ndarray[Any, Any]) -> float:
         """Converte logits di 90 bin in angolo in gradi via softmax + weighted mean."""
         exp = np.exp(logits - logits.max())
         softmax = exp / (exp.sum() + 1e-9)

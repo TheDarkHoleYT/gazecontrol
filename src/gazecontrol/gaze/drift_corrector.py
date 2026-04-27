@@ -13,9 +13,11 @@ Tre strategie complementari applicate in sequenza:
    attrazione verso gli snap points. Disabilitato per default perché richiede
    screen layout awareness.
 """
+
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +73,7 @@ class DriftCorrector:
         cy = max(0.0, min(float(self._sh - 1), cy))
         return cx, cy
 
-    def on_action(self, gaze_point: tuple[float, float],
-                  target_window: dict) -> None:
+    def on_action(self, gaze_point: tuple[float, float], target_window: dict[str, Any]) -> None:
         """Update drift estimate after a user action on a window.
 
         Uses the window centroid as gaze ground-truth.
@@ -81,7 +82,7 @@ class DriftCorrector:
             gaze_point: Gaze point at action time (after ``correct()``).
             target_window: Window info dict with ``'rect'`` = (x, y, w, h).
         """
-        rect = target_window.get('rect')
+        rect = target_window.get("rect")
         if not rect:
             return
         win_cx = rect[0] + rect[2] / 2.0
@@ -96,9 +97,13 @@ class DriftCorrector:
         self._offset_y += self._impl_alpha * err_y
         self._clamp_offset()
 
-        logger.debug("DriftCorrector: implicit recal err=(%.1f,%.1f) "
-                     "offset=(%.1f,%.1f)", err_x, err_y,
-                     self._offset_x, self._offset_y)
+        logger.debug(
+            "DriftCorrector: implicit recal err=(%.1f,%.1f) offset=(%.1f,%.1f)",
+            err_x,
+            err_y,
+            self._offset_x,
+            self._offset_y,
+        )
 
     def reset(self) -> None:
         """Azzera la correzione (utile dopo una nuova calibrazione)."""
@@ -118,23 +123,33 @@ class DriftCorrector:
     def _update_edge_snapping(self, raw_x: float, raw_y: float) -> None:
         """Adjust offset toward zero when gaze crosses screen boundaries.
 
-        Boundary crossings indicate systematic drift in that direction.
-        """
-        if raw_x - self._offset_x < -self._margin:
-            # Gaze va troppo a sinistra → correzione positiva su x
-            self._offset_x += self._edge_rate * abs(raw_x - self._offset_x)
-        elif raw_x - self._offset_x > self._sw + self._margin:
-            self._offset_x -= self._edge_rate * abs(raw_x - self._offset_x - self._sw)
+        ``corrected = raw - offset``.  When ``corrected`` overshoots a screen
+        edge by more than ``margin`` we infer a systematic bias in that
+        direction and shift ``offset`` so the next ``corrected`` lands closer
+        to the edge.  Mirrors the sign convention of :meth:`on_action`:
 
-        if raw_y - self._offset_y < -self._margin:
-            self._offset_y += self._edge_rate * abs(raw_y - self._offset_y)
-        elif raw_y - self._offset_y > self._sh + self._margin:
-            self._offset_y -= self._edge_rate * abs(raw_y - self._offset_y - self._sh)
+            err = corrected - target_edge
+            offset += rate * err
+        """
+        corrected_x = raw_x - self._offset_x
+        if corrected_x < -self._margin:
+            # corrected too far LEFT → err < 0 → decrease offset_x.
+            self._offset_x -= self._edge_rate * abs(corrected_x)
+        elif corrected_x > self._sw + self._margin:
+            # corrected too far RIGHT → err > 0 → increase offset_x.
+            self._offset_x += self._edge_rate * abs(corrected_x - self._sw)
+
+        corrected_y = raw_y - self._offset_y
+        if corrected_y < -self._margin:
+            self._offset_y -= self._edge_rate * abs(corrected_y)
+        elif corrected_y > self._sh + self._margin:
+            self._offset_y += self._edge_rate * abs(corrected_y - self._sh)
 
         self._clamp_offset()
 
     def _clamp_offset(self) -> None:
         import math
+
         mag = math.hypot(self._offset_x, self._offset_y)
         if mag > self._max_corr and mag > 0:
             scale = self._max_corr / mag

@@ -1,4 +1,5 @@
 """Tests for CaptureStage."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -16,6 +17,7 @@ def _make_stage():
     stage = object.__new__(CaptureStage)
     stage.grabber = MagicMock()
     stage._preprocessor = MagicMock()
+    stage._enhance = False  # disable CLAHE for unit tests
 
     quality_mock = MagicMock(spec=FrameQuality)
     quality_mock.is_usable = True
@@ -25,6 +27,7 @@ def _make_stage():
     fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
     stage.grabber.read_bgr.return_value = (True, fake_frame)
     stage._preprocessor.process.return_value = (fake_frame, quality_mock)
+    stage._preprocessor.compute_quality.return_value = quality_mock
     return stage
 
 

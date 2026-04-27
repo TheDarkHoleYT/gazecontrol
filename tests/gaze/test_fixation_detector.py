@@ -1,54 +1,52 @@
-"""Extended tests for FixationDetector (I-VT)."""
+"""I-VT fixation detector classification tests."""
+
 from __future__ import annotations
 
-import time
-
-from gazecontrol.gaze.fixation_detector import FixationDetector, GazeEvent
+from gazecontrol.gaze.fixation_detector import FixationDetector
 
 
-def test_initial_event_type():
+def test_initial_sample_is_fixation():
     fd = FixationDetector()
-    t = time.monotonic()
-    ev = fd.update(500.0, 300.0, t)
-    assert isinstance(ev, GazeEvent)
-    assert ev.type in ("fixation", "saccade", "pursuit", "blink")
+    ev = fd.update(100.0, 100.0, timestamp=0.0)
+    assert ev.type == "fixation"
+    assert ev.velocity_px_s == 0.0
 
 
-def test_stationary_gaze_becomes_fixation():
-    fd = FixationDetector()
-    t = time.monotonic()
-    last = None
-    # Feed 50 identical points at 30fps → should settle to fixation.
-    for i in range(50):
-        last = fd.update(500.0, 300.0, t + i / 30.0)
-    assert last is not None
-    assert last.type == "fixation"
-
-
-def test_fast_movement_becomes_saccade():
-    fd = FixationDetector()
-    t = time.monotonic()
-    # Jump 2000 px in 1/30 s → very fast.
-    fd.update(0.0, 0.0, t)
-    ev = fd.update(2000.0, 0.0, t + 1 / 30.0)
+def test_fast_motion_classifies_as_saccade():
+    fd = FixationDetector(fixation_vel_thr=30.0, saccade_vel_thr=100.0, screen_px_per_degree=44.0)
+    fd.update(0.0, 0.0, timestamp=0.0)
+    # 5000 px in 0.01 s = 500_000 px/s → way above saccade threshold
+    ev = fd.update(5000.0, 0.0, timestamp=0.01)
     assert ev.type == "saccade"
 
 
-def test_fixation_centroid_computed():
+def test_slow_motion_classifies_as_fixation():
+    fd = FixationDetector(fixation_vel_thr=30.0, saccade_vel_thr=100.0, screen_px_per_degree=44.0)
+    fd.update(0.0, 0.0, timestamp=0.0)
+    # 10 px in 0.1 s = 100 px/s, < fixation threshold (30 * 44 = 1320)
+    ev = fd.update(10.0, 0.0, timestamp=0.1)
+    assert ev.type == "fixation"
+
+
+def test_blink_event():
     fd = FixationDetector()
-    t = time.monotonic()
-    for i in range(50):
-        ev = fd.update(500.0, 300.0, t + i / 30.0)
-    # After settling, centroid should be near the fixated point.
+    fd.update(0.0, 0.0, timestamp=0.0)
+    ev = fd.update(0.0, 0.0, timestamp=0.05, is_blink=True)
+    assert ev.type == "blink"
+
+
+def test_fixation_centroid_after_multiple_samples():
+    fd = FixationDetector()
+    for i in range(10):
+        ev = fd.update(100.0 + i * 0.1, 200.0, timestamp=i * 0.01)
     assert ev.centroid is not None
-    cx, cy = ev.centroid
-    assert abs(cx - 500.0) < 20.0
-    assert abs(cy - 300.0) < 20.0
+    assert abs(ev.centroid[0] - 100.45) < 1.0
+    assert ev.centroid[1] == 200.0
 
 
-def test_event_has_velocity():
+def test_reset_clears_history():
     fd = FixationDetector()
-    t = time.monotonic()
-    fd.update(0.0, 0.0, t)
-    ev = fd.update(100.0, 0.0, t + 1 / 30.0)
-    assert ev.velocity_px_s >= 0.0
+    fd.update(100.0, 200.0, timestamp=0.0)
+    fd.reset()
+    ev = fd.update(500.0, 600.0, timestamp=0.01)
+    assert ev.velocity_px_s == 0.0

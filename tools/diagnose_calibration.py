@@ -9,15 +9,15 @@ Output:
   - Riporta brightness, shape, esito face detection per ogni frame
   - Confronta camera senza config vs. con config (risoluzione + auto-exposure)
 """
+
 import os
 import sys
-import time
 
 import cv2
 import numpy as np
 
-os.environ.setdefault('GLOG_minloglevel', '3')
-os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault("GLOG_minloglevel", "3")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 
 def _open_raw(index=0):
@@ -63,18 +63,19 @@ def _capture_frames(cap, n=30, label=""):
 def _test_mediapipe(frames, label=""):
     """Testa extract_features su una lista di (i, ret, frame, brightness, shape)."""
     from eyetrax import GazeEstimator
+
     print(f"\n  [MediaPipe {label}] Inizializzazione GazeEstimator...")
     try:
         estimator = GazeEstimator(
-            model_name='tiny_mlp',
-            model_kwargs={'hidden_layer_sizes': (256, 128, 64), 'max_iter': 500},
+            model_name="tiny_mlp",
+            model_kwargs={"hidden_layer_sizes": (256, 128, 64), "max_iter": 500},
         )
     except Exception as e:
         print(f"  ERRORE init GazeEstimator: {e}")
         return
 
     detected = 0
-    for i, ret, frame, brightness, shape in frames:
+    for i, ret, frame, brightness, _shape in frames:
         if not ret or frame is None:
             continue
         try:
@@ -92,9 +93,9 @@ def _test_mediapipe(frames, label=""):
 
 
 def run_test(label, open_fn, save_prefix, n=30):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"TEST: {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     try:
         cap = open_fn()
@@ -124,7 +125,9 @@ def run_test(label, open_fn, save_prefix, n=30):
     # Brightness stats
     brightnesses = [b for _, ret, _, b, _ in frames if ret]
     if brightnesses:
-        print(f"  Brightness: min={min(brightnesses):.1f}  mean={sum(brightnesses)/len(brightnesses):.1f}  max={max(brightnesses):.1f}")
+        print(
+            f"  Brightness: min={min(brightnesses):.1f}  mean={sum(brightnesses) / len(brightnesses):.1f}  max={max(brightnesses):.1f}"
+        )
 
     # Test MediaPipe
     valid_frames = [(i, ret, frame, b, s) for i, ret, frame, b, s in frames if ret]
@@ -139,6 +142,7 @@ def main():
 
     try:
         import mediapipe as mp
+
         print(f"MediaPipe: {mp.__version__}")
     except ImportError:
         print("MediaPipe: NON INSTALLATO")
@@ -162,11 +166,11 @@ def main():
         n=30,
     )
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("Controlla i file diag_*.png in tools/ per ispezione visiva.")
     print("Se 'CAMERA CONFIGURATA' mostra piu' facce rilevate, il fix e' corretto.")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

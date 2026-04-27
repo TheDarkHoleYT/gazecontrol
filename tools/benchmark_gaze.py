@@ -16,6 +16,7 @@ Uso:
     python tools/benchmark_gaze.py --profile default
     python tools/benchmark_gaze.py --profile default --points 13 --dwell 2.0
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,16 +32,16 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 
-import gazecontrol.config as config
 from eyetrax import GazeEstimator
+
+import gazecontrol.config as config
 from gazecontrol.capture.frame_grabber import FrameGrabber
 from gazecontrol.capture.frame_preprocessor import FramePreprocessor
 from gazecontrol.gaze.one_euro_filter import OneEuroFilter
-from gazecontrol.gaze.fixation_detector import FixationDetector
-
 
 # Pixel per grado a 60cm, monitor 24" FHD: ~ 44 px/deg
 PX_PER_DEG = 44.0
+
 
 # Layout punti di benchmark: griglia 5x3 con esclusione angoli estremi
 def _make_points(screen_w: int, screen_h: int, n: int = 13) -> list[tuple[int, int]]:
@@ -67,6 +68,7 @@ def _make_points(screen_w: int, screen_h: int, n: int = 13) -> list[tuple[int, i
 def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
     """Esegue il benchmark e ritorna le metriche."""
     import ctypes
+
     user32 = ctypes.windll.user32
     user32.SetProcessDPIAware()
     screen_w = user32.GetSystemMetrics(0)
@@ -79,18 +81,18 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
         sys.exit(1)
 
     preprocessor = FramePreprocessor()
-    filter_x = OneEuroFilter(freq=config.CAMERA_FPS,
-                              min_cutoff=config.GAZE_1EURO_MIN_CUTOFF,
-                              beta=config.GAZE_1EURO_BETA)
-    filter_y = OneEuroFilter(freq=config.CAMERA_FPS,
-                              min_cutoff=config.GAZE_1EURO_MIN_CUTOFF,
-                              beta=config.GAZE_1EURO_BETA)
+    filter_x = OneEuroFilter(
+        freq=config.CAMERA_FPS, min_cutoff=config.GAZE_1EURO_MIN_CUTOFF, beta=config.GAZE_1EURO_BETA
+    )
+    filter_y = OneEuroFilter(
+        freq=config.CAMERA_FPS, min_cutoff=config.GAZE_1EURO_MIN_CUTOFF, beta=config.GAZE_1EURO_BETA
+    )
 
     estimator = GazeEstimator(
-        model_name='tiny_mlp',
-        model_kwargs={'hidden_layer_sizes': (256, 128, 64), 'max_iter': 1000},
+        model_name="tiny_mlp",
+        model_kwargs={"hidden_layer_sizes": (256, 128, 64), "max_iter": 1000},
     )
-    profile_path = os.path.join(config.PROFILES_DIR, f'{profile_name}.pkl')
+    profile_path = os.path.join(config.PROFILES_DIR, f"{profile_name}.pkl")
     if not os.path.exists(profile_path):
         print(f"[ERRORE] Profilo '{profile_name}' non trovato.")
         grabber.stop()
@@ -111,11 +113,11 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
     print("Guarda ogni punto verde finché non scompare.\n")
 
     for i, (tx, ty) in enumerate(points):
-        print(f"  Punto {i+1}/{n_points}: ({tx}, {ty})")
+        print(f"  Punto {i + 1}/{n_points}: ({tx}, {ty})")
         collected_gaze: list[tuple[float, float]] = []
 
         t_start = time.monotonic()
-        t_collect = t_start + dwell_s * 0.4  # prima metà: attesa; seconda: raccolta
+        t_start + dwell_s * 0.4  # prima metà: attesa; seconda: raccolta
 
         while True:
             canvas = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
@@ -129,9 +131,10 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
             cv2.circle(canvas, (tx, ty), radius + 4, (255, 255, 255), 1)
 
             # Info
-            msg = f"Punto {i+1}/{n_points} — guarda il punto verde"
-            cv2.putText(canvas, msg, (20, screen_h - 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 1)
+            msg = f"Punto {i + 1}/{n_points} — guarda il punto verde"
+            cv2.putText(
+                canvas, msg, (20, screen_h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 1
+            )
 
             ok_bgr, frame_bgr = grabber.read_bgr()
             if ok_bgr:
@@ -159,21 +162,23 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
             ys = [g[1] for g in collected_gaze]
             mean_x, mean_y = np.mean(xs), np.mean(ys)
             error_px = np.hypot(mean_x - tx, mean_y - ty)
-            precision_px = np.mean(np.hypot(
-                np.array(xs) - mean_x, np.array(ys) - mean_y
-            ))
+            precision_px = np.mean(np.hypot(np.array(xs) - mean_x, np.array(ys) - mean_y))
             all_errors.append(error_px)
-            point_results.append({
-                'target': (tx, ty),
-                'mean_gaze': (round(mean_x, 1), round(mean_y, 1)),
-                'error_px': round(error_px, 1),
-                'precision_px': round(precision_px, 1),
-                'n_samples': len(collected_gaze),
-            })
-            print(f"    Errore: {error_px:.1f}px ({error_px/PX_PER_DEG:.2f}°) | "
-                  f"Precision: {precision_px:.1f}px | N={len(collected_gaze)}")
+            point_results.append(
+                {
+                    "target": (tx, ty),
+                    "mean_gaze": (round(mean_x, 1), round(mean_y, 1)),
+                    "error_px": round(error_px, 1),
+                    "precision_px": round(precision_px, 1),
+                    "n_samples": len(collected_gaze),
+                }
+            )
+            print(
+                f"    Errore: {error_px:.1f}px ({error_px / PX_PER_DEG:.2f}°) | "
+                f"Precision: {precision_px:.1f}px | N={len(collected_gaze)}"
+            )
         else:
-            print(f"    [WARN] Nessun dato raccolto")
+            print("    [WARN] Nessun dato raccolto")
 
     cv2.destroyAllWindows()
     grabber.stop()
@@ -189,31 +194,31 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
     pct_2deg = float(np.mean(errors < PX_PER_DEG * 2.0) * 100)
 
     report = {
-        'timestamp': datetime.now().isoformat(),
-        'profile': profile_name,
-        'n_points': n_points,
-        'screen': (screen_w, screen_h),
-        'mae_px': round(mae_px, 1),
-        'angular_error_deg': round(angular_error, 2),
-        'accuracy_1deg_pct': round(pct_1deg, 1),
-        'accuracy_2deg_pct': round(pct_2deg, 1),
-        'points': point_results,
+        "timestamp": datetime.now().isoformat(),
+        "profile": profile_name,
+        "n_points": n_points,
+        "screen": (screen_w, screen_h),
+        "mae_px": round(mae_px, 1),
+        "angular_error_deg": round(angular_error, 2),
+        "accuracy_1deg_pct": round(pct_1deg, 1),
+        "accuracy_2deg_pct": round(pct_2deg, 1),
+        "points": point_results,
     }
 
-    print(f"\n{'='*50}")
-    print(f"RISULTATI BENCHMARK")
-    print(f"{'='*50}")
+    print(f"\n{'=' * 50}")
+    print("RISULTATI BENCHMARK")
+    print(f"{'=' * 50}")
     print(f"  MAE:           {mae_px:.1f} px")
     print(f"  Angular error: {angular_error:.2f}°")
     print(f"  Accuracy <1°:  {pct_1deg:.0f}%")
     print(f"  Accuracy <2°:  {pct_2deg:.0f}%")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
 
     # Salva report
     os.makedirs(config.PROFILES_DIR, exist_ok=True)
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    report_path = os.path.join(config.PROFILES_DIR, f'benchmark_{ts}.json')
-    with open(report_path, 'w') as f:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = os.path.join(config.PROFILES_DIR, f"benchmark_{ts}.json")
+    with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"Report salvato: {report_path}")
 
@@ -221,16 +226,16 @@ def run_benchmark(profile_name: str, n_points: int = 13, dwell_s: float = 1.5):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='GazeControl Accuracy Benchmark')
-    parser.add_argument('--profile', default='default')
-    parser.add_argument('--points', type=int, default=13,
-                        help='Numero di punti di test (default: 13)')
-    parser.add_argument('--dwell', type=float, default=1.5,
-                        help='Secondi per punto (default: 1.5)')
+    parser = argparse.ArgumentParser(description="GazeControl Accuracy Benchmark")
+    parser.add_argument("--profile", default="default")
+    parser.add_argument(
+        "--points", type=int, default=13, help="Numero di punti di test (default: 13)"
+    )
+    parser.add_argument("--dwell", type=float, default=1.5, help="Secondi per punto (default: 1.5)")
     args = parser.parse_args()
 
     run_benchmark(args.profile, args.points, args.dwell)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -9,17 +9,17 @@ Predict contract:
 - Returns ``None`` when unfitted — callers must handle this explicitly.
   (Previously returned a noisy geometric estimate without warning.)
 """
+
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import numpy as np
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,13 @@ class GazeMapper:
         self._sw = screen_w
         self._sh = screen_h
         # Coefficient arrays (saved/loaded as npz arrays).
-        self._coef_x: np.ndarray | None = None
+        self._coef_x: np.ndarray[Any, Any] | None = None
         self._intercept_x: float = 0.0
-        self._coef_y: np.ndarray | None = None
+        self._coef_y: np.ndarray[Any, Any] | None = None
         self._intercept_y: float = 0.0
         # Scaler parameters (saved as npz arrays).
-        self._scaler_mean: np.ndarray | None = None
-        self._scaler_scale: np.ndarray | None = None
+        self._scaler_mean: np.ndarray[Any, Any] | None = None
+        self._scaler_scale: np.ndarray[Any, Any] | None = None
         self._is_fitted: bool = False
 
     # ------------------------------------------------------------------
@@ -64,9 +64,9 @@ class GazeMapper:
 
     def fit(
         self,
-        gaze_angles: np.ndarray,
-        screen_points: np.ndarray,
-        head_poses: np.ndarray | None = None,
+        gaze_angles: np.ndarray[Any, Any],
+        screen_points: np.ndarray[Any, Any],
+        head_poses: np.ndarray[Any, Any] | None = None,
     ) -> float:
         """Fit the mapper on calibration data.
 
@@ -104,9 +104,7 @@ class GazeMapper:
 
         # Leave-one-out error.
         loo_error = self._loo_error(X, y_x, y_y)
-        logger.info(
-            "GazeMapper fitted: LOO error = %.1f px (%.2f°)", loo_error, loo_error / 44.0
-        )
+        logger.info("GazeMapper fitted: LOO error = %.1f px (%.2f°)", loo_error, loo_error / 44.0)
         return loo_error
 
     def predict(
@@ -128,8 +126,8 @@ class GazeMapper:
         X = self._build_features(angles, hp)
         Xs = (X - self._scaler_mean) / self._scaler_scale
 
-        px_x = float((Xs @ self._coef_x).item() + self._intercept_x)  # type: ignore[operator]
-        px_y = float((Xs @ self._coef_y).item() + self._intercept_y)  # type: ignore[operator]
+        px_x = float((Xs @ self._coef_x).item() + self._intercept_x)
+        px_y = float((Xs @ self._coef_y).item() + self._intercept_y)
 
         px_x = max(0.0, min(float(self._sw - 1), px_x))
         px_y = max(0.0, min(float(self._sh - 1), px_y))
@@ -150,25 +148,49 @@ class GazeMapper:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        np.savez_compressed(
-            str(path),
-            coef_x=self._coef_x if self._coef_x is not None else np.array([]),
-            coef_y=self._coef_y if self._coef_y is not None else np.array([]),
-            intercept_x=np.array([self._intercept_x]),
-            intercept_y=np.array([self._intercept_y]),
-            scaler_mean=self._scaler_mean if self._scaler_mean is not None else np.array([]),
-            scaler_scale=self._scaler_scale if self._scaler_scale is not None else np.array([]),
-        )
-
-        meta = {
-            "format_version": _FORMAT_VERSION,
-            "screen_w": self._sw,
-            "screen_h": self._sh,
-            "is_fitted": self._is_fitted,
-        }
+        # Atomic write: stage both the .npz and the .meta.json under .part
+        # filenames, then os.replace() each into place only after BOTH are
+        # written.  Avoids leaving the user with a corrupt profile (or only
+        # one of the two files) if the process crashes mid-save.
+        npz_path = path if path.suffix == ".npz" else path.with_suffix(".npz")
         meta_path = path.parent / (path.stem + ".meta.json")
-        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        logger.info("GazeMapper saved to %s", path)
+        npz_part = npz_path.with_suffix(npz_path.suffix + ".part")
+        meta_part = meta_path.with_suffix(meta_path.suffix + ".part")
+
+        try:
+            np.savez_compressed(
+                str(npz_part),
+                coef_x=self._coef_x if self._coef_x is not None else np.array([]),
+                coef_y=self._coef_y if self._coef_y is not None else np.array([]),
+                intercept_x=np.array([self._intercept_x]),
+                intercept_y=np.array([self._intercept_y]),
+                scaler_mean=self._scaler_mean if self._scaler_mean is not None else np.array([]),
+                scaler_scale=self._scaler_scale if self._scaler_scale is not None else np.array([]),
+            )
+            # numpy may add an extra suffix when the path already has one.
+            # Resolve the actual file numpy wrote so os.replace() targets the
+            # correct stem.
+            actual_npz_part = (
+                npz_part if npz_part.exists() else npz_part.with_suffix(npz_part.suffix + ".npz")
+            )
+
+            meta = {
+                "format_version": _FORMAT_VERSION,
+                "screen_w": self._sw,
+                "screen_h": self._sh,
+                "is_fitted": self._is_fitted,
+            }
+            meta_part.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+            os.replace(actual_npz_part, npz_path)
+            os.replace(meta_part, meta_path)
+        except Exception:
+            for stale in (npz_part, npz_part.with_suffix(npz_part.suffix + ".npz"), meta_part):
+                if stale.exists():
+                    with contextlib.suppress(OSError):
+                        stale.unlink()
+            raise
+        logger.info("GazeMapper saved to %s", npz_path)
 
     def load(self, path: str | Path) -> bool:
         """Load mapper from *path*.npz + optional *path*.meta.json.
@@ -186,7 +208,7 @@ class GazeMapper:
             return False
 
         meta_path = npz_path.parent / (npz_path.stem + ".meta.json")
-        meta: dict = {}
+        meta: dict[str, Any] = {}
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -292,22 +314,22 @@ class GazeMapper:
 
     def _build_features(
         self,
-        gaze_angles: np.ndarray,
-        head_poses: np.ndarray | None,
-    ) -> np.ndarray:
+        gaze_angles: np.ndarray[Any, Any],
+        head_poses: np.ndarray[Any, Any] | None,
+    ) -> np.ndarray[Any, Any]:
         """Build polynomial feature matrix from gaze angles (+ optional head pose)."""
         yaw = gaze_angles[:, 0:1]
         pitch = gaze_angles[:, 1:2]
-        feats: list[np.ndarray] = [yaw, pitch, yaw**2, pitch**2, yaw * pitch]
+        feats: list[np.ndarray[Any, Any]] = [yaw, pitch, yaw**2, pitch**2, yaw * pitch]
         if head_poses is not None:
             feats.append(head_poses)
         return np.hstack(feats)
 
     def _loo_error(
         self,
-        X: np.ndarray,  # noqa: N803
-        y_x: np.ndarray,
-        y_y: np.ndarray,
+        X: np.ndarray[Any, Any],  # noqa: N803
+        y_x: np.ndarray[Any, Any],
+        y_y: np.ndarray[Any, Any],
     ) -> float:
         """Leave-one-out cross-validation error (pixels)."""
         from sklearn.linear_model import Ridge
@@ -323,7 +345,5 @@ class GazeMapper:
             rx = Ridge(alpha=1.0).fit(Xs_tr, y_x[mask])
             ry = Ridge(alpha=1.0).fit(Xs_tr, y_y[mask])
             xi = sc.transform(X[i : i + 1])
-            errors.append(
-                float(np.hypot(rx.predict(xi)[0] - y_x[i], ry.predict(xi)[0] - y_y[i]))
-            )
+            errors.append(float(np.hypot(rx.predict(xi)[0] - y_x[i], ry.predict(xi)[0] - y_y[i])))
         return float(np.mean(errors))

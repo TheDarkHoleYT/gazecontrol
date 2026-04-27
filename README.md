@@ -1,116 +1,128 @@
 # GazeControl
 
-Desktop control via eye tracking + hand gesture recognition on Windows.
+Desktop control via **hand gestures**. Pinch to click, hold to drag,
+two fingers to scroll — all from a webcam.
 
-## Features
+> Eye tracking (gaze-assisted pointer) is on the roadmap. The code
+> path exists behind an optional extra and a startup mode selector,
+> but it requires per-user calibration and is not production-ready.
 
-- **Gaze tracking** — TinyMLP calibrated mapper + 1€ adaptive filter + I-VT fixation detection
-- **L2CS-Net ensemble** — optional CNN-based gaze for higher accuracy (requires model download)
-- **Gesture recognition** — MediaPipe hand landmarks → MLP + rule classifier (pinch, swipe, resize, ...)
-- **Intent FSM** — finite-state machine translates gaze + gesture into window actions (move, resize, close, scroll)
-- **Overlay HUD** — transparent PyQt6 overlay showing fixation state and debug info
+---
 
-## Requirements
+## Quick start
 
-- Windows 10/11 (64-bit)
-- Python ≥ 3.11
-- Webcam (1280×720 preferred)
+```bash
+pip install gazecontrol
+gazecontrol
+```
+
+That's it — webcam in, cursor out. Default mode is **hand-only**;
+no calibration required.
+
+---
+
+## Hardware requirements
+
+| Item     | Minimum             |
+|----------|---------------------|
+| Webcam   | 720p @ 30 fps       |
+| OS       | Windows 10 / 11     |
+| GPU      | None required       |
+
+Win32-only for now (window manager uses native Windows APIs).
+
+---
 
 ## Installation
 
 ```bash
-git clone <repo-url> gazecontrol
+# Production
+pip install gazecontrol
+
+# Development
+git clone https://github.com/<you>/gazecontrol
 cd gazecontrol
-python -m venv .venv && .venv\Scripts\activate
-pip install -e .
-```
-
-For development (linting, tests, pre-commit):
-
-```bash
 pip install -e ".[dev]"
 pre-commit install
 ```
 
-## Quick start
+Run `gazecontrol --doctor` to verify the camera and dependencies.
 
-**Step 1 — Calibrate** (25-point grid, ~60 s):
+---
 
-```bash
-gazecontrol --calibrate --profile default
-```
+## Gestures
 
-**Step 2 — Run**:
+| Gesture                   | Action                          |
+|---------------------------|---------------------------------|
+| Index pinch (tap)         | Left click                      |
+| Index pinch (held)        | Drag the hovered window         |
+| Index pinch in corner     | Resize the hovered window       |
+| Two fingers up / down     | Scroll                          |
+| Double pinch              | Toggle the app launcher         |
 
-```bash
-gazecontrol --profile default
-```
-
-**Optional: download L2CS-Net** for higher accuracy:
-
-```bash
-python tools/download_l2cs.py
-```
+---
 
 ## Configuration
 
-Copy `settings.toml.example` to `settings.toml` and adjust:
-
-```toml
-[camera]
-index = 0
-width = 1280
-height = 720
-
-[gaze]
-model_mode = "mlp"  # "mlp" | "l2cs" | "ensemble"
-```
-
-Override any setting via env var with prefix `GAZECONTROL_`:
+Settings load from environment variables (prefix `GAZECONTROL_`,
+double underscore for nested groups) and an optional `settings.toml`
+in the working directory. See `settings.toml.example` for the full
+surface.
 
 ```bash
-GAZECONTROL_CAMERA__INDEX=1 gazecontrol --profile default
+# Example: bump pinch threshold
+export GAZECONTROL_INTERACTION__PINCH_DOWN_THRESHOLD=0.04
 ```
 
-## Benchmark
+---
 
-```bash
-python tools/benchmark_gaze.py --profile default
-python tools/benchmark_pipeline.py --baseline baselines/pipeline.json
+## CLI
+
+```text
+gazecontrol                       # run hand-only pipeline
+gazecontrol --no-overlay          # headless run (no Qt HUD)
+gazecontrol --doctor              # probe camera + deps
+gazecontrol --dump-config         # dump effective settings as JSON
+gazecontrol --benchmark 30        # run 30 s, print per-stage latency
 ```
 
-## Project structure
+---
+
+## Roadmap — eye tracking (experimental)
+
+An `eye-hand` input mode exists behind the `[eye]` extra. It pairs
+the hand pipeline with an L2CS-Net + eyetrax gaze ensemble and a
+PointerFusionStage that lets gaze drive target selection while hand
+keeps click/drag precision.
+
+Status: works on the maintainer's machine but needs per-user
+calibration, an unbundled L2CS ONNX model, and tighter drift
+correction. Not recommended for end users yet. Track progress in
+[docs/architecture.md](docs/architecture.md).
+
+---
+
+## Project layout
 
 ```
 src/gazecontrol/
-├── cli.py                # CLI entry point
-├── settings.py           # pydantic-settings configuration
-├── paths.py              # platformdirs-based path resolution
-├── pipeline/             # Stage-based pipeline architecture
-│   ├── orchestrator.py   # GazeControlPipeline (QThread orchestrator)
-│   ├── capture_stage.py  # Camera capture + preprocessing
-│   ├── gaze_stage.py     # Gaze estimation + filtering + ensemble
-│   ├── gesture_stage.py  # Hand detection + classification
-│   ├── intent_stage.py   # FSM + window selection
-│   └── calibration.py   # Calibration helpers
-├── capture/              # FrameGrabber, FramePreprocessor
-├── gaze/                 # OneEuroFilter, FixationDetector, DriftCorrector, L2CSModel, GazeMapper
-├── gesture/              # HandDetector, FeatureExtractor, RuleClassifier, MLPClassifier
-├── intent/               # IntentStateMachine, WindowSelector
-├── window_manager/       # BaseWindowManager, WindowsManager (Win32)
-├── overlay/              # OverlayWindow (PyQt6), HUDRenderer
-└── utils/                # PipelineProfiler, ModelDownloader
-tools/
-├── download_l2cs.py      # Download + convert L2CS-Net ONNX
-├── benchmark_gaze.py     # MAE / angular-error benchmark
-├── benchmark_pipeline.py # Stage latency benchmark
-└── train_gesture_mlp.py  # Train and export gesture MLP
-tests/                    # pytest, >70% coverage
-docs/                     # Design docs, architecture
+├── cli.py                # entry point + doctor + benchmark
+├── runtime/              # input mode + pipeline factory
+├── pipeline/             # CaptureStage → GestureStage → ...
+├── gesture/              # MediaPipe + rule/MLP classifiers
+├── interaction/          # InteractionFSM + WindowHitTester
+├── filters/              # 1€, Kalman, dead-zone, accel curve
+├── overlay/              # PyQt6 HUD
+├── window_manager/       # Win32 wrappers
+├── gaze/                 # roadmap: eye-tracking backends
+└── settings.py           # pydantic-settings
 ```
 
-See `docs/architecture.md` for the full pipeline diagram.
+See [docs/architecture.md](docs/architecture.md) for the full
+diagram and ADRs.
+
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT.

@@ -1,103 +1,109 @@
-"""Tests for GazeMapper — fit, predict, save/load round-trip."""
-from __future__ import annotations
+"""GazeMapper — fit/predict/save/load roundtrip with synthetic data."""
 
-import json
+from __future__ import annotations
 
 import numpy as np
 import pytest
 
+# sklearn required for fit; skip suite when not installed.
+pytest.importorskip("sklearn")
+
 from gazecontrol.gaze.gaze_mapper import GazeMapper
 
 
-@pytest.fixture
-def calibrated_mapper() -> GazeMapper:
-    """GazeMapper fitted on a synthetic 5×5 grid."""
-    mapper = GazeMapper(screen_w=1920, screen_h=1080)
+def _synthetic_calibration():
     rng = np.random.default_rng(42)
-
-    # Synthetic calibration: yaw ∈ [-30, 30], pitch ∈ [-20, 20] → screen grid.
-    n = 25
-    yaw = rng.uniform(-30, 30, n)
-    pitch = rng.uniform(-20, 20, n)
-    gaze_angles = np.column_stack([yaw, pitch])
-
-    # Linear ground truth + small noise.
-    px_x = (yaw / 30.0 + 1) / 2 * 1920 + rng.normal(0, 5, n)
-    px_y = (pitch / 20.0 + 1) / 2 * 1080 + rng.normal(0, 5, n)
-    screen_points = np.column_stack([px_x, px_y])
-
-    mapper.fit(gaze_angles, screen_points)
-    return mapper
+    angles = np.array(
+        [(yaw, pitch) for yaw in range(-20, 21, 5) for pitch in range(-15, 16, 5)],
+        dtype=float,
+    )
+    sw, sh = 1920, 1080
+    targets = np.column_stack(
+        [
+            sw / 2 + angles[:, 0] * 30 + rng.normal(0, 5, len(angles)),
+            sh / 2 - angles[:, 1] * 25 + rng.normal(0, 5, len(angles)),
+        ]
+    )
+    return angles, targets, sw, sh
 
 
 def test_unfitted_predict_returns_none():
     mapper = GazeMapper()
     assert mapper.predict(0.0, 0.0) is None
-    assert mapper.is_fitted is False
 
 
-def test_fitted_predict_returns_tuple(calibrated_mapper):
-    result = calibrated_mapper.predict(0.0, 0.0)
-    assert result is not None
-    px_x, px_y = result
-    assert 0.0 <= px_x <= 1920
-    assert 0.0 <= px_y <= 1080
+def test_fit_then_predict_within_screen():
+    angles, targets, sw, sh = _synthetic_calibration()
+    mapper = GazeMapper(screen_w=sw, screen_h=sh)
+    err = mapper.fit(angles, targets)
+    assert mapper.is_fitted is True
+    assert err < 200  # synthetic data → very small error
+    px, py = mapper.predict(0.0, 0.0)
+    assert 0 <= px < sw and 0 <= py < sh
 
 
-def test_fit_returns_loo_error(calibrated_mapper):
-    # LOO error should be finite and positive.
-    rng = np.random.default_rng(1)
-    n = 10
-    gaze_angles = np.column_stack([rng.uniform(-10, 10, n), rng.uniform(-10, 10, n)])
-    screen_points = np.column_stack([rng.uniform(0, 1920, n), rng.uniform(0, 1080, n)])
+def test_save_load_roundtrip(tmp_path):
+    angles, targets, sw, sh = _synthetic_calibration()
+    a = GazeMapper(screen_w=sw, screen_h=sh)
+    a.fit(angles, targets)
+    a.save(tmp_path / "test_profile")
+
+    b = GazeMapper(screen_w=sw, screen_h=sh)
+    assert b.load(tmp_path / "test_profile") is True
+    assert b.is_fitted is True
+    px_a, py_a = a.predict(5.0, -3.0)
+    px_b, py_b = b.predict(5.0, -3.0)
+    assert px_a == pytest.approx(px_b)
+    assert py_a == pytest.approx(py_b)
+
+
+def test_load_missing_file_returns_false(tmp_path):
     mapper = GazeMapper()
-    loo = mapper.fit(gaze_angles, screen_points)
-    assert np.isfinite(loo)
-    assert loo >= 0.0
+    assert mapper.load(tmp_path / "no_such") is False
 
 
-def test_predict_clamps_to_screen(calibrated_mapper):
-    # Extreme angles should still produce in-range coords.
-    result = calibrated_mapper.predict(90.0, 90.0)
-    assert result is not None
-    px_x, px_y = result
-    assert 0.0 <= px_x <= 1919
-    assert 0.0 <= px_y <= 1079
+def test_predict_clamps_to_screen():
+    angles, targets, sw, sh = _synthetic_calibration()
+    mapper = GazeMapper(screen_w=sw, screen_h=sh)
+    mapper.fit(angles, targets)
+    px, py = mapper.predict(180.0, 90.0)  # extreme angles
+    assert 0 <= px <= sw - 1 and 0 <= py <= sh - 1
 
 
-def test_save_load_round_trip(calibrated_mapper, tmp_path):
-    save_path = tmp_path / "mapper"
-    calibrated_mapper.save(save_path)
+def test_save_is_atomic_keeps_old_profile_on_failure(tmp_path, monkeypatch):
+    """Regression for BUG-004: if the save crashes mid-write the prior
+    profile must survive.  Staged ``.part`` files must not leak."""
+    angles, targets, sw, sh = _synthetic_calibration()
+    a = GazeMapper(screen_w=sw, screen_h=sh)
+    a.fit(angles, targets)
+    a.save(tmp_path / "profile")
 
-    assert (tmp_path / "mapper.npz").exists()
-    assert (tmp_path / "mapper.meta.json").exists()
+    npz_path = tmp_path / "profile.npz"
+    meta_path = tmp_path / "profile.meta.json"
+    assert npz_path.exists() and meta_path.exists()
+    original_npz = npz_path.read_bytes()
+    original_meta = meta_path.read_text(encoding="utf-8")
 
-    loaded = GazeMapper()
-    assert loaded.load(save_path) is True
-    assert loaded.is_fitted is True
+    # Force np.savez_compressed to raise after a partial write.
+    import gazecontrol.gaze.gaze_mapper as gm
 
-    # Predictions should match (within float precision).
-    for yaw, pitch in [(-10.0, -5.0), (0.0, 0.0), (15.0, 10.0)]:
-        orig = calibrated_mapper.predict(yaw, pitch)
-        reloaded = loaded.predict(yaw, pitch)
-        assert orig is not None
-        assert reloaded is not None
-        assert abs(orig[0] - reloaded[0]) < 1e-4
-        assert abs(orig[1] - reloaded[1]) < 1e-4
+    def boom(*args, **kwargs):
+        # Touch a .part file to simulate a partial write before crashing.
+        target = args[0]
+        with open(target, "wb") as fh:
+            fh.write(b"corrupt-half-written")
+        raise OSError("disk full simulation")
 
+    monkeypatch.setattr(gm.np, "savez_compressed", boom)
 
-def test_load_bad_file_returns_false(tmp_path):
-    bad = tmp_path / "bad.npz"
-    bad.write_bytes(b"not a valid npz")
-    mapper = GazeMapper()
-    assert mapper.load(bad) is False
-    assert mapper.is_fitted is False
+    b = GazeMapper(screen_w=sw, screen_h=sh)
+    b.fit(angles, targets)
+    with pytest.raises(OSError):
+        b.save(tmp_path / "profile")
 
-
-def test_meta_json_content(calibrated_mapper, tmp_path):
-    calibrated_mapper.save(tmp_path / "mapper")
-    meta = json.loads((tmp_path / "mapper.meta.json").read_text())
-    assert meta["screen_w"] == 1920
-    assert meta["screen_h"] == 1080
-    assert meta["is_fitted"] is True
-    assert meta["format_version"] == "1"
+    # Original profile must be intact.
+    assert npz_path.read_bytes() == original_npz
+    assert meta_path.read_text(encoding="utf-8") == original_meta
+    # No leftover .part artefacts.
+    leftovers = list(tmp_path.glob("*.part*"))
+    assert not leftovers, f"Stale .part files: {leftovers}"

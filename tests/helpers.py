@@ -1,4 +1,5 @@
 """Shared test helpers — importable from any test file."""
+
 from __future__ import annotations
 
 import numpy as np

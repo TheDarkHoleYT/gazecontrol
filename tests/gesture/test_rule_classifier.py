@@ -1,4 +1,5 @@
 """Tests for RuleClassifier — geometric gesture rules."""
+
 from __future__ import annotations
 
 from gazecontrol.gesture.rule_classifier import RuleClassifier

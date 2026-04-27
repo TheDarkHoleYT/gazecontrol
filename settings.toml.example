@@ -1,7 +1,6 @@
 # GazeControl settings — copy to settings.toml and adjust.
-# All values can also be set via environment variables:
-#   GAZECONTROL_CAMERA__INDEX=1
-#   GAZECONTROL_GAZE__MODEL_MODE=ensemble
+# Environment variables override file values; prefix GAZECONTROL_,
+# nested groups use double underscore (e.g. GAZECONTROL_GAZE__BACKEND=l2cs).
 
 [camera]
 index = 0
@@ -9,43 +8,98 @@ width = 1280
 height = 720
 fps = 30
 warmup_frames = 5
-
-[gaze]
-model_mode = "mlp"          # "mlp" | "l2cs" | "ensemble"
-strict_l2cs = false         # raise on L2CS load failure instead of warning
-ensemble_weight_mlp = 0.7
-ensemble_weight_l2cs = 0.3
-one_euro_min_cutoff = 1.5
-one_euro_beta = 0.007
-one_euro_d_cutoff = 1.0
-
-[fixation]
-velocity_threshold_deg_s = 30.0
-saccade_threshold_deg_s = 100.0
-min_fixation_duration_s = 0.1
-px_per_deg = 44.0
-
-[drift]
-edge_snap_margin_px = 80
-implicit_recal_weight = 0.15
+auto_exposure = "auto"        # "auto" | "manual"
+min_brightness_ok = 40.0
+blur_threshold = 100.0
+enhance = false
 
 [gesture]
-model_path = ""              # empty → use rule classifier only
-confidence_threshold = 0.6
-pinch_release_frames = 3     # consecutive non-PINCH frames required
+max_hands = 1
+min_detection_confidence = 0.7
+min_tracking_confidence = 0.5
+confidence_threshold = 0.85
+swipe_velocity_threshold = 200.0
+pointer_sensitivity = 1.0
 
-[intent]
-double_pinch_window_s = 0.4
-dwell_time_s = 0.8
-cooldown_s = 0.3
-blink_hold_max_s = 0.4
+[gesture.pointer.one_euro]
+enabled = true
+min_cutoff = 1.0
+beta = 0.007
+d_cutoff = 1.0
+
+[gesture.pointer.kalman]
+enabled = true
+process_noise = 1.0e-3
+measurement_noise_base = 0.05
+
+[gesture.pointer.acceleration]
+enabled = true
+v_low = 100.0
+v_high = 1500.0
+gain_low = 1.0
+gain_high = 2.5
+
+[gesture.pointer.dead_zone]
+enabled = true
+radius_px = 1.5
+hysteresis_px = 0.5
+
+[interaction]
+pinch_down_threshold = 0.05
+pinch_up_threshold = 0.07
+tap_ms = 250
+hold_ms = 400
+double_pinch_ms = 400
+tap_max_move_px = 12
+grip_ratio = 0.65
+cooldown_ms = 250
+min_window_width = 200
+min_window_height = 150
 
 [overlay]
 enabled = true
 opacity = 0.85
 fps = 30
+pointer_radius = 8
 
-[paths]
-profiles_dir = ""   # empty → platformdirs user_config_dir / gazecontrol / profiles
-log_file = ""       # empty → platformdirs user_log_dir / gazecontrol / gazecontrol.log
-models_dir = ""     # empty → repo-root / models
+[logging]
+level = "INFO"
+format = "text"               # "text" | "json"
+rotation_mb = 5
+backup_count = 5
+
+[runtime]
+input_mode = "hand-only"      # "hand-only" | "eye-hand"
+mode_selector_remember = true
+show_mode_selector = true
+
+# ---------------------------------------------------------------------------
+# Eye tracking — only active when runtime.input_mode = "eye-hand".
+# Requires the [eye] extra: pip install "gazecontrol[eye]".
+# ---------------------------------------------------------------------------
+[gaze]
+backend = "ensemble"          # "eyetrax" | "l2cs" | "ensemble"
+strict_l2cs = false
+ensemble_weight_eyetrax = 0.3
+ensemble_weight_l2cs = 0.7
+one_euro_min_cutoff = 1.5
+one_euro_beta = 0.007
+blink_hold_max_s = 0.4
+confidence_threshold = 0.5
+fixation_velocity_deg_s = 30.0
+saccade_velocity_deg_s = 100.0
+px_per_deg = 44.0
+profile = "default"
+
+[gaze.drift]
+enabled = true
+edge_margin_px = 60
+edge_correction_rate = 0.05
+implicit_alpha = 0.08
+max_correction_px = 200
+
+[fusion]
+hand_confidence_threshold = 0.7
+gaze_confidence_threshold = 0.6
+divergence_threshold_px = 300
+gaze_assisted_click = false

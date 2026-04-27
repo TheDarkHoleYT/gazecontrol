@@ -1,234 +1,220 @@
-"""GazeStage — gaze estimation, filtering, L2CS ensemble, fixation detection.
+"""GazeStage — pipeline stage that runs a :class:`GazeBackend`.
 
-Bug fixes applied here vs the old main.py:
-- L2CS bridge: crop_from_landmarks() called with real MediaPipe landmarks.
-- GazeMapper: predict() returning None is handled (ensemble weight renormalised).
-- L2CSModel.enabled flag checked before calling predict().
-- time.monotonic() used exclusively.
-- blink_hold_max_s is a named setting, not a magic literal.
+The stage owns the backend (built via the runtime factory), the per-axis
+:class:`OneEuroFilter` smoothing, the :class:`DriftCorrector`, and the
+I-VT :class:`FixationDetector`. Its output is written to the shared
+:class:`FrameContext` for downstream stages (PointerFusion, Interaction).
+
+Heavy resources (ONNX, MediaPipe Face Mesh) are allocated in :meth:`start`
+to honour the legacy single-thread MediaPipe contract.
 """
+
 from __future__ import annotations
 
 import logging
 
-import numpy as np
-
+from gazecontrol.filters.one_euro import OneEuroFilter
+from gazecontrol.gaze.backend import GazeBackend, GazePrediction
 from gazecontrol.gaze.drift_corrector import DriftCorrector
-from gazecontrol.gaze.face_crop import FaceCropper
 from gazecontrol.gaze.fixation_detector import FixationDetector
-from gazecontrol.gaze.gaze_mapper import GazeMapper
-from gazecontrol.gaze.one_euro_filter import OneEuroFilter
-from gazecontrol.paths import Paths
 from gazecontrol.pipeline.context import FrameContext
-from gazecontrol.settings import get_settings
+from gazecontrol.settings import AppSettings, get_settings
 
 logger = logging.getLogger(__name__)
 
 
 class GazeStage:
-    """Gaze estimation pipeline stage.
+    """Pipeline stage producing per-frame gaze estimates."""
 
-    Responsibilities:
-    - Run eyetrax TinyMLP to get raw screen gaze coords.
-    - Optionally run L2CS-Net CNN and blend into ensemble.
-    - Apply OneEuroFilter for adaptive smoothing.
-    - Apply DriftCorrector for long-term stability.
-    - Classify each sample as fixation / saccade / pursuit via I-VT.
-    """
+    name = "gaze"
 
-    def __init__(self, screen_w: int, screen_h: int) -> None:
-        s = get_settings()
+    def __init__(
+        self,
+        backend: GazeBackend,
+        screen_w: int,
+        screen_h: int,
+        settings: AppSettings | None = None,
+    ) -> None:
+        self._backend = backend
         self._screen_w = screen_w
         self._screen_h = screen_h
-        self._gaze_cfg = s.gaze
-        self._fix_cfg = s.fixation
+        self._settings = settings
 
-        # OneEuroFilter — one per axis.
-        self._filter_x = OneEuroFilter(
-            freq=s.camera.fps,
-            min_cutoff=s.gaze.one_euro_min_cutoff,
-            beta=s.gaze.one_euro_beta,
-        )
-        self._filter_y = OneEuroFilter(
-            freq=s.camera.fps,
-            min_cutoff=s.gaze.one_euro_min_cutoff,
-            beta=s.gaze.one_euro_beta,
-        )
-        self._fixation_detector = FixationDetector(
-            screen_px_per_degree=s.fixation.px_per_deg,
-            fixation_vel_thr=s.fixation.velocity_threshold_deg_s,
-            saccade_vel_thr=s.fixation.saccade_threshold_deg_s,
-        )
-        self._drift_corrector = DriftCorrector(
-            screen_w=screen_w, screen_h=screen_h
-        )
-        self._gaze_mapper = GazeMapper(screen_w=screen_w, screen_h=screen_h)
-        self._face_cropper = FaceCropper()
-
-        # L2CS-Net — loaded lazily, disabled gracefully if not available.
-        self._l2cs: object | None = None
-        self._l2cs_enabled = False
-        self._init_l2cs()
+        self._filter_x: OneEuroFilter | None = None
+        self._filter_y: OneEuroFilter | None = None
+        self._drift: DriftCorrector | None = None
+        self._fixation: FixationDetector | None = None
 
         # Blink hold state.
-        self._last_valid_gaze: tuple[int, int] | None = None
-        self._blink_start: float | None = None
+        self._last_valid_xy: tuple[int, int] | None = None
+        self._blink_started_at: float | None = None
+        self._blink_hold_max_s: float = 0.4
 
-        # eyetrax estimator — set externally by the orchestrator after calibration load.
-        self.estimator: object | None = None
-        self.is_calibrated: bool = False
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
-    def _init_l2cs(self) -> None:
-        """Load L2CS-Net ONNX model; disable cleanly if absent or broken."""
-        mode = self._gaze_cfg.model_mode
-        if mode == "mlp":
-            logger.info("Gaze mode = mlp; L2CS-Net disabled.")
-            return
-
-        model_path = Paths.l2cs_model()
-        if not model_path.exists():
-            msg = "L2CS-Net model not found at %s. Run tools/download_l2cs.py."
-            if self._gaze_cfg.strict_l2cs:
-                raise FileNotFoundError(msg % model_path)
-            logger.warning(msg + " Falling back to MLP only.", model_path)
-            return
-
+    def start(self) -> bool:
+        """Build filters/drift/fixation and start the backend."""
+        s = self._settings or get_settings()
+        gcfg = s.gaze
         try:
-            from gazecontrol.gaze.l2cs_model import L2CSModel  # type: ignore[attr-defined]
-
-            self._l2cs = L2CSModel(str(model_path))
-            self._l2cs_enabled = getattr(self._l2cs, "is_loaded", False)
+            ok = self._backend.start()
         except Exception:
-            msg = "L2CS-Net failed to load."
-            if self._gaze_cfg.strict_l2cs:
-                raise
-            logger.warning(msg + " Falling back to MLP only.", exc_info=True)
+            logger.exception("GazeStage: backend start raised.")
+            return False
+        if not ok:
+            logger.warning("GazeStage: backend %s declined to start.", self._backend.name)
+            return False
+
+        self._filter_x = OneEuroFilter(
+            min_cutoff=gcfg.one_euro_min_cutoff,
+            beta=gcfg.one_euro_beta,
+        )
+        self._filter_y = OneEuroFilter(
+            min_cutoff=gcfg.one_euro_min_cutoff,
+            beta=gcfg.one_euro_beta,
+        )
+        if gcfg.drift.enabled:
+            self._drift = DriftCorrector(
+                screen_w=self._screen_w,
+                screen_h=self._screen_h,
+                edge_margin_px=gcfg.drift.edge_margin_px,
+                edge_correction_rate=gcfg.drift.edge_correction_rate,
+                implicit_alpha=gcfg.drift.implicit_alpha,
+                max_correction_px=float(gcfg.drift.max_correction_px),
+            )
+        self._fixation = FixationDetector(
+            screen_px_per_degree=gcfg.px_per_deg,
+            fixation_vel_thr=gcfg.fixation_velocity_deg_s,
+            saccade_vel_thr=gcfg.saccade_velocity_deg_s,
+        )
+        self._blink_hold_max_s = gcfg.blink_hold_max_s
+        return True
+
+    def stop(self) -> None:
+        """Release the backend and reset filter/fixation state."""
+        try:
+            self._backend.stop()
+        except Exception:
+            logger.exception("GazeStage: backend stop raised.")
+        self._filter_x = None
+        self._filter_y = None
+        self._drift = None
+        self._fixation = None
+        self._last_valid_xy = None
+        self._blink_started_at = None
+
+    def is_calibrated(self) -> bool:
+        """True when the wrapped backend reports a usable calibration."""
+        return self._backend.is_calibrated()
+
+    @property
+    def backend_name(self) -> str:
+        """Name of the wrapped backend (for HUD diagnostics)."""
+        return self._backend.name
+
+    # ------------------------------------------------------------------
+    # Frame processing
+    # ------------------------------------------------------------------
 
     def process(self, ctx: FrameContext) -> FrameContext:
-        """Run the full gaze pipeline for one frame tick."""
+        """Predict, filter, drift-correct, and classify one gaze sample."""
         if not ctx.capture_ok or ctx.frame_bgr is None or ctx.frame_rgb is None:
             return ctx
 
-        if not self.is_calibrated or self.estimator is None:
+        try:
+            prediction: GazePrediction | None = self._backend.predict(
+                ctx.frame_bgr,
+                ctx.frame_rgb,
+                ctx.t0,
+            )
+        except Exception:
+            logger.debug("GazeStage: backend predict raised.", exc_info=True)
+            prediction = None
+
+        if prediction is None:
+            ctx.face_present = False
+            ctx.gaze_screen = self._apply_blink_hold(ctx.t0, hold_active=False)
+            ctx.gaze_confidence = 0.0
+            ctx.gaze_blink = False
             return ctx
 
-        t0 = ctx.t0
+        ctx.face_present = True
+        ctx.gaze_yaw_pitch_deg = prediction.yaw_pitch_deg
 
-        try:
-            # 1. Landmark extraction via eyetrax.
-            features, blink = self.estimator.extract_features(ctx.frame_bgr)  # type: ignore[union-attr]
-            ctx.blink = bool(blink)
+        if prediction.blink:
+            ctx.gaze_blink = True
+            ctx.gaze_screen = self._apply_blink_hold(ctx.t0, hold_active=True)
+            ctx.gaze_confidence = 0.0
+            return ctx
 
-            if blink:
-                ctx = self._handle_blink(ctx, t0)
-                return ctx
+        # Reset blink timer on a valid sample.
+        self._blink_started_at = None
+        ctx.gaze_blink = False
 
-            self._blink_start = None
-
-            if features is None or (ctx.quality is not None and not ctx.quality.is_usable):
-                ctx.gaze_point = self._last_valid_gaze
-                return ctx
-
-            # 2. TinyMLP prediction → raw screen coords.
-            raw = self.estimator.predict([features])[0]  # type: ignore[union-attr]
-            px, py = float(raw[0]), float(raw[1])
-            ctx.gaze_raw = (px, py)
-            ctx.landmarks = features  # store for L2CS crop
-
-            # 3. L2CS-Net ensemble (optional).
-            if self._l2cs_enabled and self._l2cs is not None:
-                px, py = self._apply_l2cs_ensemble(ctx, px, py)
-
-            # 4. OneEuroFilter.
-            fx = self._filter_x.filter(px, timestamp=t0)
-            fy = self._filter_y.filter(py, timestamp=t0)
-            ctx.gaze_filtered = (fx, fy)
-
-            # 5. Drift correction.
-            cx, cy = self._drift_corrector.correct(fx, fy)
-            ctx.gaze_corrected = (cx, cy)
-
-            # 6. Fixation detection.
-            gaze_event = self._fixation_detector.update(cx, cy, t0)
-            ctx.fixation_event = gaze_event
-
-            # 7. Choose output point (centroid during fixation, raw during saccade).
-            if gaze_event.type == "saccade":
-                gaze_point = (int(cx), int(cy))
-            elif gaze_event.centroid:
-                gx, gy = gaze_event.centroid
-                gaze_point = (int(gx), int(gy))
-            else:
-                gaze_point = (int(cx), int(cy))
-
-            ctx.gaze_point = gaze_point
-            self._last_valid_gaze = gaze_point
-
-        except Exception:
-            logger.warning("GazeStage: predict failed", exc_info=True)
-
-        return ctx
-
-    def _handle_blink(self, ctx: FrameContext, t0: float) -> FrameContext:
-        """Hold last valid gaze during blink; reset filters on long blinks."""
-        blink_hold_max_s = get_settings().intent.blink_hold_max_s
-        if self._blink_start is None:
-            self._blink_start = t0
-        blink_duration = t0 - self._blink_start
-        if blink_duration < blink_hold_max_s and self._last_valid_gaze:
-            ctx.gaze_point = self._last_valid_gaze
-        elif blink_duration >= blink_hold_max_s:
-            self._filter_x.reset()
-            self._filter_y.reset()
-        return ctx
-
-    def _apply_l2cs_ensemble(
-        self, ctx: FrameContext, px: float, py: float
-    ) -> tuple[float, float]:
-        """Blend TinyMLP prediction with L2CS-Net via weighted ensemble."""
-        # Use real landmarks for crop if available.
-        landmarks_np: np.ndarray | None = None
-        if ctx.landmarks is not None:
-            raw_lm = getattr(ctx.landmarks, "face_landmarks", None)
-            if raw_lm is not None:
-                try:
-                    landmarks_np = np.array(
-                        [(lm.x, lm.y, lm.z) for lm in raw_lm], dtype=np.float32
-                    )
-                except Exception:
-                    landmarks_np = None
-
-        if landmarks_np is not None:
-            face_crop = self._face_cropper.crop_from_landmarks(ctx.frame_bgr, landmarks_np)
+        raw_x, raw_y = prediction.screen_xy
+        # Filter both axes (1€ adaptive low-pass).
+        if self._filter_x is not None and self._filter_y is not None:
+            fx = self._filter_x.filter(float(raw_x), timestamp=ctx.t0)
+            fy = self._filter_y.filter(float(raw_y), timestamp=ctx.t0)
         else:
-            face_crop = self._face_cropper.crop_from_frame(ctx.frame_bgr)
+            fx, fy = float(raw_x), float(raw_y)
 
-        if face_crop is None:
-            return px, py
+        if self._drift is not None:
+            cx, cy = self._drift.correct(fx, fy)
+        else:
+            cx, cy = fx, fy
 
-        l2cs_angles = self._l2cs.predict(face_crop)  # type: ignore[union-attr]
-        if l2cs_angles is None:
-            return px, py
+        if self._fixation is not None:
+            event = self._fixation.update(cx, cy, ctx.t0)
+            ctx.gaze_event = event
+            if event.type == "fixation" and event.centroid is not None:
+                gx, gy = event.centroid
+            else:
+                gx, gy = cx, cy
+        else:
+            gx, gy = cx, cy
 
-        yaw, pitch = l2cs_angles
-        l2cs_xy = self._gaze_mapper.predict(yaw, pitch)
-        if l2cs_xy is None:
-            return px, py
+        x = max(0, min(self._screen_w - 1, int(gx)))
+        y = max(0, min(self._screen_h - 1, int(gy)))
+        ctx.gaze_screen = (x, y)
+        ctx.gaze_confidence = prediction.confidence
+        self._last_valid_xy = (x, y)
+        return ctx
 
-        cfg = self._gaze_cfg
-        # If GazeMapper is unfitted, it returns None (fixed); safe to blend.
-        mlp_w = cfg.ensemble_weight_mlp
-        l2cs_w = cfg.ensemble_weight_l2cs
-        return (
-            mlp_w * px + l2cs_w * l2cs_xy[0],
-            mlp_w * py + l2cs_w * l2cs_xy[1],
+    # ------------------------------------------------------------------
+    # Drift feedback (called by ActionStage on user-initiated actions)
+    # ------------------------------------------------------------------
+
+    def on_user_action(
+        self,
+        gaze_point: tuple[int, int],
+        target_rect: tuple[int, int, int, int],
+    ) -> None:
+        """Update drift estimate from a user action (implicit recalibration)."""
+        if self._drift is None:
+            return
+        self._drift.on_action(
+            (float(gaze_point[0]), float(gaze_point[1])),
+            {"rect": target_rect},
         )
 
-    def on_action(self, gaze_point: tuple[int, int], target_window: dict) -> None:
-        """Notify drift corrector of a confirmed user action (implicit recal)."""
-        self._drift_corrector.on_action(gaze_point, target_window)
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
-    def reset_filters(self) -> None:
-        """Reset OneEuro filters (e.g. after long pause)."""
-        self._filter_x.reset()
-        self._filter_y.reset()
+    def _apply_blink_hold(
+        self,
+        t: float,
+        *,
+        hold_active: bool,
+    ) -> tuple[int, int] | None:
+        """Return last valid gaze for up to ``blink_hold_max_s`` during blinks."""
+        if not hold_active or self._last_valid_xy is None:
+            return None
+        if self._blink_started_at is None:
+            self._blink_started_at = t
+        if (t - self._blink_started_at) > self._blink_hold_max_s:
+            return None
+        return self._last_valid_xy

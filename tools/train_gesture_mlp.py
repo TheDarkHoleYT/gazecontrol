@@ -11,6 +11,7 @@ The CSV must have columns matching the feature vector layout expected by
     finger_states_0..4, finger_angles_0..4, palm_direction,
     hand_velocity_x, hand_velocity_y, thumb_index_distance, label
 """
+
 from __future__ import annotations
 
 import argparse
@@ -33,10 +34,10 @@ def train_and_export(X: np.ndarray, y: np.ndarray, output_path: str) -> None:
         y:           Label array (N,) str — must be subset of MLP_GESTURE_LABELS.
         output_path: Destination ONNX file path.
     """
-    from sklearn.neural_network import MLPClassifier as SkMLP
-    from sklearn.preprocessing import LabelEncoder
     from skl2onnx import convert_sklearn
     from skl2onnx.common.data_types import FloatTensorType
+    from sklearn.neural_network import MLPClassifier as SkMLP
+    from sklearn.preprocessing import LabelEncoder
 
     le = LabelEncoder()
     le.fit(MLP_GESTURE_LABELS)
@@ -50,7 +51,9 @@ def train_and_export(X: np.ndarray, y: np.ndarray, output_path: str) -> None:
         random_state=42,
     )
     clf.fit(X, y_enc)
-    logger.info("MLP trained: %d samples, %d features, %d classes.", *X.shape, len(MLP_GESTURE_LABELS))
+    logger.info(
+        "MLP trained: %d samples, %d features, %d classes.", *X.shape, len(MLP_GESTURE_LABELS)
+    )
 
     initial_type = [("input", FloatTensorType([None, X.shape[1]]))]
     options = {id(clf): {"zipmap": True}}

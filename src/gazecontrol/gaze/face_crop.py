@@ -9,14 +9,17 @@ derivare il bounding box senza rieseguire una seconda rete di face detection.
 Se i landmarks non sono disponibili, fa fallback su una stima basata su
 coordinate di landmark hardcoded.
 """
+
 from __future__ import annotations
+
+from typing import Any
 
 import cv2
 import numpy as np
 
 # ImageNet normalization (usata da L2CS-Net/ResNet-50)
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # Padding attorno al bounding box del volto (% della dimensione)
 _FACE_PAD = 0.4
@@ -36,9 +39,9 @@ class FaceCropper:
 
     def crop_from_landmarks(
         self,
-        frame_bgr: np.ndarray,
-        landmarks: np.ndarray,
-    ) -> np.ndarray | None:
+        frame_bgr: np.ndarray[Any, Any],
+        landmarks: np.ndarray[Any, Any],
+    ) -> np.ndarray[Any, Any] | None:
         """Ritaglia il volto usando landmarks MediaPipe (478 punti, coordinate norm.).
 
         Args:
@@ -51,10 +54,44 @@ class FaceCropper:
         h, w = frame_bgr.shape[:2]
 
         # Usa subset di landmarks per bounding box stabile (contorno volto)
-        face_contour = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
-                        361, 288, 397, 365, 379, 378, 400, 377, 152, 148,
-                        176, 149, 150, 136, 172, 58, 132, 93, 234, 127,
-                        162, 21, 54, 103, 67, 109]
+        face_contour = [
+            10,
+            338,
+            297,
+            332,
+            284,
+            251,
+            389,
+            356,
+            454,
+            323,
+            361,
+            288,
+            397,
+            365,
+            379,
+            378,
+            400,
+            377,
+            152,
+            148,
+            176,
+            149,
+            150,
+            136,
+            172,
+            58,
+            132,
+            93,
+            234,
+            127,
+            162,
+            21,
+            54,
+            103,
+            67,
+            109,
+        ]
 
         pts = landmarks[face_contour, :2]  # (N, 2) normalized
         x_min, y_min = pts.min(axis=0)
@@ -64,9 +101,9 @@ class FaceCropper:
 
     def crop_from_frame(
         self,
-        frame_bgr: np.ndarray,
+        frame_bgr: np.ndarray[Any, Any],
         face_rect: tuple[float, float, float, float] | None = None,
-    ) -> np.ndarray | None:
+    ) -> np.ndarray[Any, Any] | None:
         """Ritaglia il volto da un rettangolo normalizzato oppure assume centro frame.
 
         Args:
@@ -87,11 +124,14 @@ class FaceCropper:
 
     def _crop_and_normalize(
         self,
-        frame_bgr: np.ndarray,
-        x_min: float, y_min: float,
-        x_max: float, y_max: float,
-        w: int, h: int,
-    ) -> np.ndarray | None:
+        frame_bgr: np.ndarray[Any, Any],
+        x_min: float,
+        y_min: float,
+        x_max: float,
+        y_max: float,
+        w: int,
+        h: int,
+    ) -> np.ndarray[Any, Any] | None:
         """Applica padding, ritaglia, ridimensiona e normalizza il crop."""
         # Padding proporzionale
         pad_x = (x_max - x_min) * _FACE_PAD

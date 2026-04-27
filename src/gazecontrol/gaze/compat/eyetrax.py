@@ -11,11 +11,14 @@ Call `apply_patches(open_camera_fn, wait_for_face_fn)` once at startup, before c
 any eyetrax calibration routine.  Both callables must be already defined; this module
 does not define them.
 """
+
 from __future__ import annotations
 
 import importlib.metadata
 import logging
 from collections.abc import Callable
+from types import ModuleType
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +37,8 @@ class PatchError(RuntimeError):
 
 
 def apply_patches(
-    open_camera_fn: Callable,
-    wait_for_face_fn: Callable,
+    open_camera_fn: Callable[..., Any],
+    wait_for_face_fn: Callable[..., Any],
 ) -> None:
     """Monkey-patch eyetrax calibration internals.
 
@@ -56,7 +59,7 @@ def apply_patches(
     """
     _check_version()
 
-    replacements: dict[str, Callable] = {
+    replacements: dict[str, Callable[..., Any]] = {
         "open_camera": open_camera_fn,
         "wait_for_face_and_countdown": wait_for_face_fn,
     }
@@ -73,14 +76,13 @@ def apply_patches(
         setattr(module, attr, replacements[attr])
         logger.debug("Patched %s.%s", module_path, attr)
 
-    logger.info(
-        "eyetrax calibration patches applied (%d targets)", len(_PATCH_TARGETS)
-    )
+    logger.info("eyetrax calibration patches applied (%d targets)", len(_PATCH_TARGETS))
 
 
-def _import_module(dotted_path: str):
+def _import_module(dotted_path: str) -> ModuleType:
     """Import a module by dotted path, raising ImportError if it does not exist."""
     import importlib
+
     return importlib.import_module(dotted_path)
 
 

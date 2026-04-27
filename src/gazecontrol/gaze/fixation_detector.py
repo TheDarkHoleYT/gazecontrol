@@ -13,6 +13,7 @@ A 60cm dalla webcam e schermo FHD da 24":
   1 pixel ≈ 0.025° → 30°/s ≈ 1200 px/s; 100°/s ≈ 4000 px/s.
   Adattiamo dinamicamente in base alla risoluzione.
 """
+
 from __future__ import annotations
 
 import time
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 class GazeEvent:
     """Classified gaze event from the I-VT fixation detector."""
 
-    type: str           # 'fixation' | 'saccade' | 'pursuit' | 'blink'
+    type: str  # 'fixation' | 'saccade' | 'pursuit' | 'blink'
     point: tuple[float, float]
     velocity_px_s: float
     duration_s: float = 0.0
@@ -41,10 +42,10 @@ class FixationDetector:
         fixation_history_ms  : finestra temporale per calcolo centroide fixation (ms).
     """
 
-    FIXATION = 'fixation'
-    SACCADE = 'saccade'
-    PURSUIT = 'pursuit'
-    BLINK = 'blink'
+    FIXATION = "fixation"
+    SACCADE = "saccade"
+    PURSUIT = "pursuit"
+    BLINK = "blink"
 
     def __init__(
         self,
@@ -54,8 +55,8 @@ class FixationDetector:
         fixation_history_ms: float = 150.0,
     ) -> None:
         self._px_per_deg = screen_px_per_degree
-        self._fix_thr = fixation_vel_thr * screen_px_per_degree   # → px/s
-        self._sac_thr = saccade_vel_thr * screen_px_per_degree    # → px/s
+        self._fix_thr = fixation_vel_thr * screen_px_per_degree  # → px/s
+        self._sac_thr = saccade_vel_thr * screen_px_per_degree  # → px/s
         self._history_s = fixation_history_ms / 1000.0
 
         self._prev_point: tuple[float, float] | None = None
@@ -67,8 +68,9 @@ class FixationDetector:
         self._current_type = self.FIXATION
         self._current_start = time.monotonic()
 
-    def update(self, x: float, y: float, timestamp: float | None = None,
-               is_blink: bool = False) -> GazeEvent:
+    def update(
+        self, x: float, y: float, timestamp: float | None = None, is_blink: bool = False
+    ) -> GazeEvent:
         """Update the detector with a new gaze sample.
 
         Args:
@@ -90,8 +92,7 @@ class FixationDetector:
             dur = timestamp - self._current_start
             self._current_type = self.BLINK
             self._current_start = timestamp
-            return GazeEvent(type=self.BLINK, point=(x, y), velocity_px_s=0.0,
-                             duration_s=dur)
+            return GazeEvent(type=self.BLINK, point=(x, y), velocity_px_s=0.0, duration_s=dur)
 
         velocity = 0.0
         if self._prev_point is not None and self._prev_ts is not None:

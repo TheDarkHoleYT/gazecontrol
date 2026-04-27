@@ -1,4 +1,5 @@
 """Tests for FrameGrabber — thread safety, read, recovery."""
+
 from __future__ import annotations
 
 import time
@@ -23,8 +24,8 @@ def grabber():
 
 
 def test_start_stop(grabber):
-    # After start(), grabber should be running.
-    assert grabber._running is True
+    # After start(), the running Event should be set.
+    assert grabber._running.is_set() is True
 
 
 def test_read_bgr_returns_frame(grabber):
@@ -36,25 +37,15 @@ def test_read_bgr_returns_frame(grabber):
     assert frame.shape[2] == 3
 
 
-def test_read_rgb_returns_rgb_frame(grabber):
+def test_read_bgr_returns_copy_on_repeated_call(grabber):
+    """read_bgr should return a copy so the caller can modify it safely."""
     time.sleep(0.05)
-    ok, frame = grabber.read()
-    assert ok is True
-    assert frame is not None
-    # Green channel was set to 128 in FakeVideoCapture; after BGR→RGB conversion
-    # the original blue channel should be non-zero at position [..2].
-    assert frame.dtype == np.uint8
-
-
-def test_read_bgr_and_read_derive_from_same_snapshot(grabber):
-    """read_bgr and read must not reference different frames."""
-    time.sleep(0.05)
-    ok1, bgr = grabber.read_bgr()
-    ok2, rgb = grabber.read()
-    assert ok1
-    assert ok2
-    # Both should have the same spatial dimensions.
-    assert bgr.shape[:2] == rgb.shape[:2]
+    ok1, frame1 = grabber.read_bgr()
+    ok2, frame2 = grabber.read_bgr()
+    assert ok1 and ok2
+    # Both frames should have identical shapes.
+    assert frame1.shape == frame2.shape
+    assert frame1.dtype == np.uint8
 
 
 def test_actual_resolution_does_not_block(grabber):

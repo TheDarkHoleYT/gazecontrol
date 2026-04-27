@@ -17,27 +17,26 @@ Uso:
     python tools/download_l2cs.py --no-fp16        # mantieni FP32
     python tools/download_l2cs.py --skip-download  # se hai gia' il .pkl
 """
+
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 # Fix encoding su Windows (cp1252 non supporta caratteri box-drawing)
-if sys.stdout.encoding and sys.stdout.encoding.lower() in ('cp1252', 'cp850'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stdout.encoding and sys.stdout.encoding.lower() in ("cp1252", "cp850"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
-MODELS_DIR = ROOT / 'models'
-OUTPUT_PATH = MODELS_DIR / 'l2cs_net_gaze360.onnx'
-_WEIGHTS_FILE = MODELS_DIR / 'L2CSNet_gaze360.pkl'
+MODELS_DIR = ROOT / "models"
+OUTPUT_PATH = MODELS_DIR / "l2cs_net_gaze360.onnx"
+_WEIGHTS_FILE = MODELS_DIR / "L2CSNet_gaze360.pkl"
 
 # Google Drive folder ufficiale L2CS-Net (dal README del repo)
 # https://github.com/Ahmednull/L2CS-Net
 _GDRIVE_FOLDER_URL = (
-    "https://drive.google.com/drive/folders/"
-    "17p6ORr-JQJcw-eYtG2WGNiuS_qVKwdWd?usp=sharing"
+    "https://drive.google.com/drive/folders/17p6ORr-JQJcw-eYtG2WGNiuS_qVKwdWd?usp=sharing"
 )
 _GDRIVE_FOLDER_ID = "17p6ORr-JQJcw-eYtG2WGNiuS_qVKwdWd"
 
@@ -64,12 +63,14 @@ _MANUAL_MSG = """
 def _ensure_gdown() -> bool:
     try:
         import gdown  # noqa: F401
+
         return True
     except ImportError:
         print("[L2CS] Installo gdown...")
         import subprocess
+
         r = subprocess.run(
-            [sys.executable, '-m', 'pip', 'install', 'gdown', '-q'],
+            [sys.executable, "-m", "pip", "install", "gdown", "-q"],
             capture_output=True,
         )
         return r.returncode == 0
@@ -95,7 +96,7 @@ def download_weights() -> bool:
     # Prova 1: scarica la cartella Drive e cerca L2CSNet_gaze360.pkl
     try:
         print("[L2CS] Tentativo 1: download cartella Google Drive...")
-        tmp_dir = MODELS_DIR / '_l2cs_tmp'
+        tmp_dir = MODELS_DIR / "_l2cs_tmp"
         tmp_dir.mkdir(exist_ok=True)
         gdown.download_folder(
             _GDRIVE_FOLDER_URL,
@@ -104,12 +105,13 @@ def download_weights() -> bool:
             use_cookies=False,
         )
         # Cerca il file pkl nella cartella scaricata
-        for candidate in tmp_dir.rglob('*.pkl'):
-            if 'gaze360' in candidate.name.lower() or 'l2cs' in candidate.name.lower():
+        for candidate in tmp_dir.rglob("*.pkl"):
+            if "gaze360" in candidate.name.lower() or "l2cs" in candidate.name.lower():
                 candidate.rename(_WEIGHTS_FILE)
                 break
         # Pulizia tmp
         import shutil
+
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
         if _WEIGHTS_FILE.exists() and _WEIGHTS_FILE.stat().st_size > 1_000_000:
@@ -118,7 +120,8 @@ def download_weights() -> bool:
     except Exception as e:
         print(f"\n[WARN] Tentativo 1 fallito: {e}")
         import shutil
-        shutil.rmtree(MODELS_DIR / '_l2cs_tmp', ignore_errors=True)
+
+        shutil.rmtree(MODELS_DIR / "_l2cs_tmp", ignore_errors=True)
 
     # Prova 2: fuzzy=True su URL cartella
     try:
@@ -173,22 +176,23 @@ def build_l2cs_model():
 
         In inferenza usiamo solo yaw_gaze e pitch_gaze (weighted softmax → angoli).
         """
+
         def __init__(self, num_bins: int = 90):
             super().__init__()
             base = models.resnet50(weights=None)
-            self.conv1   = base.conv1
-            self.bn1     = base.bn1
-            self.relu    = base.relu
+            self.conv1 = base.conv1
+            self.bn1 = base.bn1
+            self.relu = base.relu
             self.maxpool = base.maxpool
-            self.layer1  = base.layer1
-            self.layer2  = base.layer2
-            self.layer3  = base.layer3
-            self.layer4  = base.layer4
+            self.layer1 = base.layer1
+            self.layer2 = base.layer2
+            self.layer3 = base.layer3
+            self.layer4 = base.layer4
             self.avgpool = base.avgpool
             # Head names che corrispondono esattamente alle chiavi del checkpoint
-            self.fc_yaw_gaze   = nn.Linear(2048, num_bins)
+            self.fc_yaw_gaze = nn.Linear(2048, num_bins)
             self.fc_pitch_gaze = nn.Linear(2048, num_bins)
-            self.fc_finetune   = nn.Linear(2051, 3)   # 3D gaze vector (opzionale)
+            self.fc_finetune = nn.Linear(2051, 3)  # 3D gaze vector (opzionale)
 
         def forward(self, x):
             x = self.conv1(x)
@@ -222,19 +226,19 @@ def convert_to_onnx(use_fp16: bool = True):
     # weights_only=False necessario per caricare oggetti arbitrari (state_dict dict).
     state_dict = torch.load(
         str(_WEIGHTS_FILE),
-        map_location='cpu',
+        map_location="cpu",
         weights_only=False,
     )
 
     # Se il checkpoint wrappa lo state_dict dentro una chiave (es. 'model', 'state_dict')
     if isinstance(state_dict, dict):
-        for key in ('model', 'state_dict', 'model_state_dict', 'net'):
+        for key in ("model", "state_dict", "model_state_dict", "net"):
             if key in state_dict:
                 state_dict = state_dict[key]
                 break
 
     # DataParallel salva con prefisso 'module.'
-    cleaned = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    cleaned = {k.replace("module.", ""): v for k, v in state_dict.items()}
     missing, _ = model.load_state_dict(cleaned, strict=False)
     if missing:
         sample = missing[:3]
@@ -247,17 +251,17 @@ def convert_to_onnx(use_fp16: bool = True):
     # Usa l'API legacy (dynamo=False) per evitare dipendenza da onnxscript.
     # Se la versione torch e' >= 2.5 il parametro dynamo va passato esplicitamente.
     export_kwargs = dict(
-        input_names=['input'],
-        output_names=['yaw_logits', 'pitch_logits'],
-        dynamic_axes={'input': {0: 'batch_size'}},
+        input_names=["input"],
+        output_names=["yaw_logits", "pitch_logits"],
+        dynamic_axes={"input": {0: "batch_size"}},
         export_params=True,
         do_constant_folding=True,
-        opset_version=14,   # opset 14 e' sicuro su tutte le versioni torch >= 1.11
+        opset_version=14,  # opset 14 e' sicuro su tutte le versioni torch >= 1.11
     )
-    torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
+    torch_version = tuple(int(x) for x in torch.__version__.split(".")[:2])
     if torch_version >= (2, 5):
         # PyTorch >= 2.5 usa dynamo=True per default; forziamo il path legacy
-        export_kwargs['dynamo'] = False
+        export_kwargs["dynamo"] = False
 
     torch.onnx.export(model, dummy, str(OUTPUT_PATH), **export_kwargs)
     mb = OUTPUT_PATH.stat().st_size / 1e6
@@ -271,16 +275,19 @@ def convert_to_onnx(use_fp16: bool = True):
 
 def _quantize_fp16():
     """Converte ONNX FP32 -> FP16 (circa -50% dimensioni)."""
-    for _try in ('onnxconverter', 'onnxmltools'):
+    for _try in ("onnxconverter", "onnxmltools"):
         try:
             import onnx
-            if _try == 'onnxconverter':
+
+            if _try == "onnxconverter":
                 from onnxconverter_common import float16
+
                 print("[L2CS] Quantizzazione FP16 (onnxconverter-common)...")
                 m = onnx.load(str(OUTPUT_PATH))
                 m16 = float16.convert_float_to_float16(m, keep_io_types=True)
             else:
                 from onnxmltools.utils.float16_converter import convert_float_to_float16
+
                 print("[L2CS] Quantizzazione FP16 (onnxmltools)...")
                 m = onnx.load(str(OUTPUT_PATH))
                 m16 = convert_float_to_float16(m)
@@ -296,12 +303,16 @@ def _quantize_fp16():
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Download + conversione L2CS-Net per GazeControl Enterprise'
+        description="Download + conversione L2CS-Net per GazeControl Enterprise"
     )
-    parser.add_argument('--no-fp16', action='store_true',
-                        help='Mantieni FP32 (~100 MB invece di ~50 MB)')
-    parser.add_argument('--skip-download', action='store_true',
-                        help='Salta download (usa .pkl gia\' presente in models/)')
+    parser.add_argument(
+        "--no-fp16", action="store_true", help="Mantieni FP32 (~100 MB invece di ~50 MB)"
+    )
+    parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Salta download (usa .pkl gia' presente in models/)",
+    )
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -335,5 +346,5 @@ def main():
     print("     python tools/benchmark_gaze.py --profile default")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

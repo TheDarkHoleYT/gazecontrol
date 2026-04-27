@@ -12,6 +12,7 @@ Usage::
     log_file = Paths.log_file()
     model = Paths.models() / "gesture_mlp.onnx"
 """
+
 from __future__ import annotations
 
 import importlib.resources
@@ -88,9 +89,11 @@ class Paths:
         return path
 
     @staticmethod
-    def l2cs_model() -> Path:
-        """Return the L2CS-Net ONNX model path."""
-        return Paths.models() / "l2cs_net_gaze360.onnx"
+    def launcher_config(override: str | os.PathLike[str] | None = None) -> Path:
+        """Return the launcher app list config path (TOML)."""
+        if override:
+            return Path(override)
+        return _user_config_base() / "launcher.toml"
 
     @staticmethod
     def gesture_mlp_model() -> Path:
@@ -98,11 +101,35 @@ class Paths:
         return Paths.models() / "gesture_mlp.onnx"
 
     @staticmethod
+    def gesture_tcn_model() -> Path:
+        """Return the gesture TCN ONNX model path."""
+        return Paths.models() / "gesture_tcn_v1.onnx"
+
+    @staticmethod
     def hand_landmarker() -> Path:
         """Return the MediaPipe hand landmarker task file path."""
         return Paths.models() / "hand_landmarker.task"
 
     @staticmethod
-    def face_landmarker() -> Path:
-        """Return the MediaPipe face landmarker task file path."""
-        return Paths.models() / "face_landmarker.task"
+    def l2cs_model() -> Path:
+        """Return the L2CS-Net ONNX model path."""
+        return Paths.models() / "l2cs_net_gaze360.onnx"
+
+    @staticmethod
+    def blaze_face_model() -> Path:
+        """Return the BlazeFace short-range MediaPipe model path."""
+        return Paths.models() / "blaze_face_short_range.tflite"
+
+    @staticmethod
+    def gaze_profile(name: str) -> Path:
+        """Return the gaze calibration profile path for *name* (.npz)."""
+        return Paths.profiles() / f"{name}.gaze.npz"
+
+    @staticmethod
+    def runtime_config(override: str | os.PathLike[str] | None = None) -> Path:
+        """Return the runtime persistence file (TOML) path."""
+        if override:
+            return Path(override)
+        base = _user_config_base()
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "runtime.toml"

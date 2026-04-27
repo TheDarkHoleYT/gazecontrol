@@ -1,12 +1,43 @@
 """Pytest configuration and shared fixtures for gazecontrol tests."""
+
 from __future__ import annotations
 
+import os
+import random
 from collections.abc import Generator
 
+import numpy as np
 import pytest
+from hypothesis import HealthCheck
+from hypothesis import settings as hyp_settings
 
 from gazecontrol.settings import AppSettings, reset_settings
 from tests.helpers import FakeVideoCapture, make_fake_hand_result
+
+# ---------------------------------------------------------------------------
+# Determinism — pin all random sources before any test imports modules that
+# spin up classifiers or generate sample data.
+# ---------------------------------------------------------------------------
+
+os.environ.setdefault("PYTHONHASHSEED", "0")
+
+hyp_settings.register_profile(
+    "ci",
+    deadline=None,
+    max_examples=50,
+    derandomize=True,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+hyp_settings.load_profile("ci")
+
+
+@pytest.fixture(autouse=True)
+def _pin_random_seeds() -> Generator[None, None, None]:
+    """Reset ``random`` and ``numpy.random`` to a fixed seed for each test."""
+    random.seed(0)
+    np.random.seed(0)
+    yield
+
 
 # ---------------------------------------------------------------------------
 # Settings override fixture

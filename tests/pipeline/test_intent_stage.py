@@ -1,41 +1,23 @@
-"""Tests for IntentStage."""
+"""Tests for InteractionStage (replaces old intent_stage tests)."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from gazecontrol.gesture.pinch_tracker import PinchEvent
+from gazecontrol.interaction.types import Interaction, InteractionKind
 from gazecontrol.pipeline.context import FrameContext
-from gazecontrol.pipeline.intent_stage import IntentStage
+from gazecontrol.pipeline.interaction_stage import InteractionStage
 
 
 def _make_stage():
-    stage = object.__new__(IntentStage)
-    stage._state_machine = MagicMock()
-    stage._window_selector = MagicMock()
-    stage._state_machine.state = "IDLE"
-    stage._state_machine.update.return_value = None
-    stage._window_selector.find_window.return_value = {"hwnd": 42}
+    stage = object.__new__(InteractionStage)
+    stage._fsm = MagicMock()
+    stage._hit_tester = MagicMock()
+    stage._fsm.state = "IDLE"
+    stage._fsm.update.return_value = None
+    stage._hit_tester.at.return_value = None
     return stage
-
-
-def test_process_no_gaze_skips_window_selector():
-    stage = _make_stage()
-    ctx = FrameContext(gaze_point=None)
-    stage.process(ctx)
-    stage._window_selector.find_window.assert_not_called()
-
-
-def test_process_with_gaze_calls_window_selector():
-    stage = _make_stage()
-    ctx = FrameContext(gaze_point=(500, 300))
-    stage.process(ctx)
-    stage._window_selector.find_window.assert_called_once_with((500, 300))
-
-
-def test_process_sets_target_window():
-    stage = _make_stage()
-    ctx = FrameContext(gaze_point=(500, 300))
-    result = stage.process(ctx)
-    assert result.target_window == {"hwnd": 42}
 
 
 def test_state_property():
@@ -43,15 +25,54 @@ def test_state_property():
     assert stage.state == "IDLE"
 
 
-def test_process_passes_gesture_to_fsm():
+def test_process_no_fingertip_skips_hit_tester():
     stage = _make_stage()
-    ctx = FrameContext(
-        gaze_point=(100, 100),
-        gesture_label="PINCH",
-        gesture_confidence=0.95,
-        hand_position=(400.0, 300.0),
-    )
+    ctx = FrameContext(fingertip_screen=None, pinch_event=PinchEvent.NONE)
     stage.process(ctx)
-    call_kwargs = stage._state_machine.update.call_args[1]
-    assert call_kwargs["gesture_id"] == "PINCH"
-    assert call_kwargs["gesture_confidence"] == 0.95
+    stage._hit_tester.at.assert_not_called()
+
+
+def test_process_with_fingertip_calls_hit_tester():
+    stage = _make_stage()
+    ctx = FrameContext(fingertip_screen=(500, 300), pinch_event=PinchEvent.NONE)
+    stage.process(ctx)
+    stage._hit_tester.at.assert_called_once_with((500, 300))
+
+
+def test_process_sets_hovered_window():
+    stage = _make_stage()
+    from gazecontrol.interaction.types import HoveredWindow
+
+    hw = HoveredWindow(hwnd=42, rect=(0, 0, 800, 600), title="Test")
+    stage._hit_tester.at.return_value = hw
+    ctx = FrameContext(fingertip_screen=(100, 100), pinch_event=PinchEvent.NONE)
+    result = stage.process(ctx)
+    assert result.hovered_window is hw
+
+
+def test_process_sets_interaction():
+    stage = _make_stage()
+    interaction = Interaction(kind=InteractionKind.CLICK, point=(200, 300))
+    stage._fsm.update.return_value = interaction
+    ctx = FrameContext(fingertip_screen=(200, 300), pinch_event=PinchEvent.DOWN)
+    result = stage.process(ctx)
+    assert result.interaction is interaction
+
+
+def test_start_returns_true():
+    stage = _make_stage()
+    assert stage.start() is True
+
+
+def test_stop_is_noop():
+    stage = _make_stage()
+    stage.stop()  # must not raise
+
+
+def test_fsm_exception_does_not_propagate():
+    stage = _make_stage()
+    stage._fsm.update.side_effect = RuntimeError("crash")
+    ctx = FrameContext(fingertip_screen=(0, 0), pinch_event=PinchEvent.NONE)
+    result = stage.process(ctx)
+    assert result is not None
+    assert result.interaction is None

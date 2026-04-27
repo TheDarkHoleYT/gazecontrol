@@ -3,10 +3,12 @@
 Uses ``detect_for_video(image, ts_ms)`` with a monotonic timestamp so that
 MediaPipe can apply inter-frame tracking smoothing correctly.
 """
+
 from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -28,23 +30,23 @@ logger = logging.getLogger(__name__)
 class _Landmark:
     __slots__ = ("x", "y", "z")
 
-    def __init__(self, lm: object) -> None:
-        self.x: float = lm.x  # type: ignore[attr-defined]
-        self.y: float = lm.y  # type: ignore[attr-defined]
-        self.z: float = lm.z  # type: ignore[attr-defined]
+    def __init__(self, lm: Any) -> None:
+        self.x: float = lm.x
+        self.y: float = lm.y
+        self.z: float = lm.z
 
 
 class _HandLandmarks:
-    def __init__(self, landmarks: list) -> None:
+    def __init__(self, landmarks: list[Any]) -> None:
         self.landmark = [_Landmark(lm) for lm in landmarks]
 
 
 class _HandResult:
     """Emulates ``mp.solutions.hands.Hands.process()`` result."""
 
-    def __init__(self, hand_landmarks_list: list) -> None:
+    def __init__(self, hand_landmarks_list: list[Any]) -> None:
         self.multi_hand_landmarks = [_HandLandmarks(lms) for lms in hand_landmarks_list]
-        self.multi_handedness = [None] * len(hand_landmarks_list)
+        self.multi_handedness: list[Any | None] = [None] * len(hand_landmarks_list)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ class HandDetector:
 
     def process(
         self,
-        frame_rgb: object,  # np.ndarray RGB uint8
+        frame_rgb: Any,
         ts_ms: int | None = None,
     ) -> _HandResult | None:
         """Detect hand landmarks in *frame_rgb*.
@@ -89,7 +91,7 @@ class HandDetector:
             if ts_ms is None:
                 ts_ms = int(time.monotonic() * 1000) - self._start_time_ms
 
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)  # type: ignore[arg-type]
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
             result = self._detector.detect_for_video(mp_image, ts_ms)
 
             if not result.hand_landmarks:
@@ -97,7 +99,7 @@ class HandDetector:
 
             return _HandResult(result.hand_landmarks)
 
-        except Exception:
+        except (RuntimeError, ValueError):
             logger.exception("HandDetector.process() failed.")
             return None
 
@@ -106,5 +108,5 @@ class HandDetector:
         try:
             self._detector.close()
             logger.info("HandDetector closed.")
-        except Exception:
+        except (RuntimeError, OSError):
             logger.exception("HandDetector.close() failed.")

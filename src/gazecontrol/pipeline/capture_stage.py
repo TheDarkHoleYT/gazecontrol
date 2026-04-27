@@ -1,9 +1,5 @@
-"""CaptureStage — webcam capture + frame preprocessing.
+"""CaptureStage — webcam capture + frame preprocessing."""
 
-Fixes vs the old main.py approach:
-- Single frame read per tick: BGR and RGB derived from one copy (no double copy bug).
-- Busy-loop guard: returns immediately with capture_ok=False when no frame available.
-"""
 from __future__ import annotations
 
 import logging
@@ -13,7 +9,7 @@ import cv2
 from gazecontrol.capture.frame_grabber import FrameGrabber
 from gazecontrol.capture.frame_preprocessor import FramePreprocessor
 from gazecontrol.pipeline.context import FrameContext
-from gazecontrol.settings import get_settings
+from gazecontrol.settings import AppSettings, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +21,21 @@ class CaptureStage:
     runs CLAHE preprocessing, and stores everything on the context.
     """
 
-    def __init__(self) -> None:
-        s = get_settings().camera
+    name = "capture"
+    # Signals to PipelineEngine that downstream stages should be skipped when
+    # this stage sets capture_ok=False (no usable frame this tick).
+    skip_on_capture_fail = True
+
+    def __init__(self, settings: AppSettings | None = None) -> None:
+        s = (settings or get_settings()).camera
         self.grabber = FrameGrabber(
             camera_index=s.index,
             width=s.width,
             height=s.height,
             fps=s.fps,
         )
-        self._preprocessor = FramePreprocessor()
+        self._enhance = s.enhance
+        self._preprocessor = FramePreprocessor(blur_threshold=s.blur_threshold)
 
     def start(self) -> bool:
         """Start the background capture thread.  Returns False on camera failure."""
@@ -50,15 +52,24 @@ class CaptureStage:
             ctx.capture_ok = False
             return ctx
 
-        # Derive RGB from the same raw frame (atomic — no second grabber.read() call).
-        frame_rgb = cv2.cvtColor(cv2.flip(frame_bgr, 1), cv2.COLOR_BGR2RGB)
+        # Mirror horizontally so the frame matches the user's natural perspective
+        # (webcam frames are un-mirrored by default; mirror = natural feedback).
+        # Both BGR and RGB are derived from the same flipped snapshot so that
+        # gaze and gesture coordinate systems are consistent.
+        frame_bgr_flipped = cv2.flip(frame_bgr, 1)
+        frame_rgb = cv2.cvtColor(frame_bgr_flipped, cv2.COLOR_BGR2RGB)
 
-        # CLAHE enhancement runs on BGR; quality score computed inside.
-        enhanced_bgr, quality = self._preprocessor.process(frame_bgr)
+        if self._enhance:
+            # CLAHE + sharpening: helps in poor lighting but costs ~3–5 ms/frame.
+            enhanced_bgr, quality = self._preprocessor.process(frame_bgr_flipped)
+        else:
+            # Skip CLAHE/sharpening; compute quality score only (cheap Laplacian).
+            quality = self._preprocessor.compute_quality(frame_bgr_flipped)
+            enhanced_bgr = frame_bgr_flipped
 
         ctx.capture_ok = True
-        ctx.frame_bgr = enhanced_bgr
-        ctx.frame_rgb = frame_rgb
+        ctx.frame_bgr = enhanced_bgr  # flipped (CLAHE-enhanced when enhance=True)
+        ctx.frame_rgb = frame_rgb  # flipped, raw RGB (for hand detector)
         ctx.quality = quality
         return ctx
 
