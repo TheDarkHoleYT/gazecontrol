@@ -24,6 +24,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             if "win32" in item.keywords:
                 item.add_marker(skip_win32)
 
+
 # ---------------------------------------------------------------------------
 # Determinism — pin all random sources before any test imports modules that
 # spin up classifiers or generate sample data.
