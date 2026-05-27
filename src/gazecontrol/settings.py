@@ -45,6 +45,16 @@ class LoggingSettings(BaseModel):
         ge=1,
         description="Log pipeline timing every N ticks (approx every 10 s at 30 fps).",
     )
+    telemetry_per_frame: bool = Field(
+        default=False,
+        description=(
+            "G15 — emit one structured 'gaze.pred' log record per frame "
+            "with screen coords, confidence, drift offset, fixation, "
+            "backend, profile, head pose, and quality flags. Off by "
+            "default to keep log volume sane; auto-enabled by --replay "
+            "(G12) and the CI bench job (G11)."
+        ),
+    )
 
 
 class CameraSettings(BaseSettings):

@@ -214,3 +214,83 @@ def test_alternating_failure_and_success_keeps_flag_clear():
         ctx = stage.process(_ctx())
     assert stage.backend_down is False
     assert ctx.gaze_backend_down is False
+
+
+def test_profiler_counter_increments_once_per_degradation():
+    """The fallback counter (gazecontrol_backend_fallback_total) must
+    count *incidents*, not frames — exactly one bump per degrade
+    cycle, no bumps while still degraded."""
+    from gazecontrol.utils.profiler import PipelineProfiler
+
+    profiler = PipelineProfiler()
+    stage = GazeStage(
+        backend=_Backend([None, None, None, None, None, None, _OK, _OK]),
+        screen_w=1920,
+        screen_h=1080,
+        settings=_settings(policy="hand_only", threshold=3),
+        profiler=profiler,
+    )
+    stage.start()
+    # 6 misses + 2 successes — should fire the counter exactly once.
+    for _ in range(8):
+        stage.process(_ctx())
+    snapshot = dict(profiler._backend_fallback_total)
+    assert snapshot.get("stub") == 1
+
+
+def test_profiler_counter_separates_recover_then_redegrade():
+    """A degrade → recover → degrade sequence must count TWO incidents."""
+    from gazecontrol.utils.profiler import PipelineProfiler
+
+    profiler = PipelineProfiler()
+    stage = GazeStage(
+        backend=_Backend([None, None, None, _OK, None, None, None]),
+        screen_w=1920,
+        screen_h=1080,
+        settings=_settings(policy="hand_only", threshold=3),
+        profiler=profiler,
+    )
+    stage.start()
+    for _ in range(7):
+        stage.process(_ctx())
+    assert profiler._backend_fallback_total["stub"] == 2
+
+
+def test_telemetry_per_frame_off_by_default_emits_nothing(caplog):
+    stage = GazeStage(
+        backend=_Backend([_OK, _OK, _OK]),
+        screen_w=1920,
+        screen_h=1080,
+        settings=_settings(),
+    )
+    stage.start()
+    with caplog.at_level("INFO", logger="gazecontrol.gaze.telemetry"):
+        for _ in range(3):
+            stage.process(_ctx())
+    assert not [r for r in caplog.records if r.message == "gaze.pred"]
+
+
+def test_telemetry_per_frame_on_emits_structured_record(caplog):
+    s = _settings()
+    s.logging.telemetry_per_frame = True
+    stage = GazeStage(
+        backend=_Backend([_OK]),
+        screen_w=1920,
+        screen_h=1080,
+        settings=s,
+    )
+    stage.start()
+    with caplog.at_level("INFO", logger="gazecontrol.gaze.telemetry"):
+        ctx = _ctx()
+        ctx.frame_id = 42
+        stage.process(ctx)
+    pred_records = [r for r in caplog.records if r.message == "gaze.pred"]
+    assert len(pred_records) == 1
+    rec = pred_records[0]
+    # Required extras present + JSON-safe types.
+    for key in ("frame_id", "backend", "gaze_x", "gaze_y", "confidence",
+                "drift_x_px", "drift_y_px", "fixation", "quality_flags",
+                "blink", "backend_down"):
+        assert hasattr(rec, key), f"missing extra: {key!r}"
+    assert rec.frame_id == 42
+    assert rec.backend == "stub"

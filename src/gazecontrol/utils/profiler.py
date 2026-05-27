@@ -85,6 +85,10 @@ class PipelineProfiler:
         self._stage_errors_total: dict[str, int] = defaultdict(int)
         self._camera_restarts_total: int = 0
         self._model_load_failures_total: int = 0
+        # G15 — per-backend fallback counter. Keyed by the backend name
+        # (e.g. "l2cs", "ensemble") so a deployment with both eye and
+        # hand modes can attribute degradations to the right component.
+        self._backend_fallback_total: dict[str, int] = defaultdict(int)
         self._gauge_actual_fps: float = 0.0
         self._gauge_gaze_confidence: float = 0.0
         self._gauge_hand_confidence: float = 0.0
@@ -114,6 +118,18 @@ class PipelineProfiler:
         """Record a failed model load."""
         with self._lock:
             self._model_load_failures_total += 1
+
+    def inc_backend_fallback(self, backend: str) -> None:
+        """Record a gaze-backend degradation event (G15 / ADR-0008).
+
+        Called by :class:`GazeStage` exactly once per degrade→recover
+        cycle so the counter measures *incidents*, not individual
+        missed frames. Exported as
+        ``gazecontrol_backend_fallback_total{backend="<name>"}``
+        in the Prometheus textfile.
+        """
+        with self._lock:
+            self._backend_fallback_total[backend] += 1
 
     def set_actual_fps(self, fps: float) -> None:
         """Update the actual-FPS gauge."""
@@ -270,6 +286,7 @@ class PipelineProfiler:
 
         with self._lock:
             stage_errors = dict(self._stage_errors_total)
+            backend_fallbacks = dict(self._backend_fallback_total)
             frames_total = self._frames_total
             frames_dropped = self._frames_dropped_total
             cam_restarts = self._camera_restarts_total
@@ -311,6 +328,14 @@ class PipelineProfiler:
         ]
         for stage, n in stage_errors.items():
             lines.append(f'gazecontrol_stage_errors_total{{stage="{stage}"}} {n}')
+        lines += [
+            "# HELP gazecontrol_backend_fallback_total Gaze-backend degradation events.",
+            "# TYPE gazecontrol_backend_fallback_total counter",
+        ]
+        for backend, n in backend_fallbacks.items():
+            lines.append(
+                f'gazecontrol_backend_fallback_total{{backend="{backend}"}} {n}'
+            )
 
         try:
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")

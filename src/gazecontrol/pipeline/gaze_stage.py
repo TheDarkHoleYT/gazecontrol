@@ -59,12 +59,16 @@ class GazeStage:
         settings: AppSettings | None = None,
         *,
         on_stop_requested: StopCallback | None = None,
+        profiler: object | None = None,
     ) -> None:
         self._backend = backend
         self._screen_w = screen_w
         self._screen_h = screen_h
         self._settings = settings
         self._on_stop_requested = on_stop_requested
+        self._profiler = profiler  # Optional PipelineProfiler — duck-typed.
+        self._telemetry_per_frame = False
+        self._gaze_log = logging.getLogger("gazecontrol.gaze.telemetry")
 
         self._filter_x: OneEuroFilter | None = None
         self._filter_y: OneEuroFilter | None = None
@@ -136,6 +140,9 @@ class GazeStage:
         self._consecutive_failures = 0
         self._backend_down = False
         self._stop_requested = False
+        # G15 — per-frame telemetry gate (off by default; on under
+        # --replay and CI bench runs).
+        self._telemetry_per_frame = bool(s.logging.telemetry_per_frame)
         return True
 
     def stop(self) -> None:
@@ -233,7 +240,57 @@ class GazeStage:
         ctx.gaze_screen = (x, y)
         ctx.gaze_confidence = prediction.confidence
         self._last_valid_xy = (x, y)
+
+        # G15 — structured per-frame telemetry (opt-in).
+        if self._telemetry_per_frame:
+            self._emit_telemetry(ctx, prediction, (x, y))
         return ctx
+
+    # ------------------------------------------------------------------
+    # Telemetry (G15)
+    # ------------------------------------------------------------------
+
+    def _emit_telemetry(
+        self,
+        ctx: FrameContext,
+        prediction: GazePrediction,
+        screen_xy: tuple[int, int],
+    ) -> None:
+        """Emit one structured ``gaze.pred`` log record per frame.
+
+        Routes to a dedicated logger so operators can filter at scale
+        without leaking into the main stream. The extra dict is kept
+        flat + JSON-safe so python-json-logger renders it correctly.
+        """
+        drift_x = drift_y = 0.0
+        if self._drift is not None:
+            drift_x, drift_y = self._drift.offset
+        fixation = (
+            ctx.gaze_event.type
+            if ctx.gaze_event is not None
+            else None
+        )
+        head_pose = prediction.head_pose_rad
+        self._gaze_log.info(
+            "gaze.pred",
+            extra={
+                "frame_id": ctx.frame_id,
+                "t0": ctx.t0,
+                "backend": prediction.backend_name,
+                "gaze_x": screen_xy[0],
+                "gaze_y": screen_xy[1],
+                "confidence": float(prediction.confidence),
+                "uncertainty_px": prediction.uncertainty_px,
+                "drift_x_px": drift_x,
+                "drift_y_px": drift_y,
+                "fixation": fixation,
+                "head_pose_rad": list(head_pose) if head_pose is not None else None,
+                "face_id": prediction.face_id,
+                "quality_flags": int(prediction.quality_flags),
+                "blink": bool(prediction.blink),
+                "backend_down": self._backend_down,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Failure policy (G17, ADR-0008)
@@ -254,6 +311,16 @@ class GazeStage:
             # Already degraded — keep state, no extra log spam.
             return
         self._backend_down = True
+        # G15 — count the degradation event once (not per frame).
+        if self._profiler is not None:
+            inc = getattr(self._profiler, "inc_backend_fallback", None)
+            if callable(inc):
+                try:
+                    inc(self._backend.name)
+                except Exception:
+                    logger.debug(
+                        "GazeStage: inc_backend_fallback raised.", exc_info=True
+                    )
         if self._failure_policy == "continue":
             logger.info(
                 "GazeStage: backend silent for %d frames — policy='continue', "
