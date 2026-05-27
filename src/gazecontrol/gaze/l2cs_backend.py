@@ -21,6 +21,7 @@ import numpy as np
 
 from gazecontrol.errors import ModelLoadError
 from gazecontrol.gaze.backend import GazePrediction, GazeQuality
+from gazecontrol.gaze.blink import BlinkDetector, mean_ear
 from gazecontrol.gaze.confidence import (
     AngleJitter,
     confidence_score,
@@ -29,6 +30,7 @@ from gazecontrol.gaze.confidence import (
 from gazecontrol.gaze.face_crop import FaceCropper
 from gazecontrol.gaze.face_tracking import FaceTracker, NormalisedBBox
 from gazecontrol.gaze.gaze_mapper import GazeMapper
+from gazecontrol.gaze.head_pose import solve_head_pose
 from gazecontrol.paths import Paths
 from gazecontrol.settings import ConfidenceModelSettings
 
@@ -50,17 +52,23 @@ class L2CSBackend:
         face_lock_iou_threshold: float = 0.3,
         confidence_model: ConfidenceModelSettings | None = None,
         mapper_type: str = "poly_ridge",
+        enable_face_landmarker: bool = True,
+        blink_closed_threshold: float = 0.18,
+        blink_open_margin: float = 0.04,
+        blink_min_closed_frames: int = 2,
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
         self._profile_name = profile_name
         self._strict = strict
         self._mapper_type = mapper_type
+        self._enable_face_landmarker = bool(enable_face_landmarker)
 
         self._model: Any = None
         self._face_cropper: FaceCropper | None = None
         self._mapper: GazeMapper | None = None
         self._face_detector: Any = None
+        self._face_landmarker: Any = None
         self._face_tracker = FaceTracker(lock_iou_threshold=face_lock_iou_threshold)
         self._conf_cfg = confidence_model or ConfidenceModelSettings()
         self._angle_jitter = AngleJitter(
@@ -68,6 +76,11 @@ class L2CSBackend:
             jitter_saturation_deg=self._conf_cfg.jitter_saturation_deg,
         )
         self._last_face_score: float = 0.5
+        self._blink_detector = BlinkDetector(
+            closed_threshold=blink_closed_threshold,
+            open_margin=blink_open_margin,
+            min_closed_frames=blink_min_closed_frames,
+        )
 
     def start(self) -> bool:
         """Load the ONNX model, the gaze mapper, and the face detector."""
@@ -128,21 +141,62 @@ class L2CSBackend:
         except (ImportError, AttributeError, RuntimeError, OSError, ValueError):
             logger.exception("L2CSBackend: MediaPipe FaceDetector unavailable.")
             self._face_detector = None
+
+        # --- G2 + G6: Face Landmarker for head-pose PnP + EAR blink -----
+        if self._enable_face_landmarker:
+            try:
+                from mediapipe.tasks import python as mp_python
+                from mediapipe.tasks.python import vision as mp_vision
+
+                lm_path = Paths.face_landmarker()
+                if not lm_path.exists():
+                    logger.warning(
+                        "L2CSBackend: Face Landmarker model not found at %s; "
+                        "head-pose PnP and EAR blink detection disabled.",
+                        lm_path,
+                    )
+                    self._face_landmarker = None
+                else:
+                    lm_options = mp_vision.FaceLandmarkerOptions(
+                        base_options=mp_python.BaseOptions(model_asset_path=str(lm_path)),
+                        running_mode=mp_vision.RunningMode.IMAGE,
+                        num_faces=1,
+                        # Output blendshapes / facial transformation matrices
+                        # are off by default — we only need the landmarks.
+                        output_face_blendshapes=False,
+                        output_facial_transformation_matrixes=False,
+                    )
+                    self._face_landmarker = mp_vision.FaceLandmarker.create_from_options(
+                        lm_options
+                    )
+            except (ImportError, AttributeError, RuntimeError, OSError, ValueError):
+                logger.exception(
+                    "L2CSBackend: MediaPipe FaceLandmarker unavailable — "
+                    "head-pose / EAR blink disabled."
+                )
+                self._face_landmarker = None
         return True
 
     def stop(self) -> None:
-        """Release the ONNX session and MediaPipe face detector."""
+        """Release the ONNX session and MediaPipe face detector / landmarker."""
         if self._face_detector is not None:
             try:
                 self._face_detector.close()
             except (RuntimeError, OSError):
                 logger.debug("L2CSBackend: face detector close failed.", exc_info=True)
             self._face_detector = None
+        if self._face_landmarker is not None:
+            try:
+                self._face_landmarker.close()
+            except (RuntimeError, OSError):
+                logger.debug("L2CSBackend: face landmarker close failed.", exc_info=True)
+            self._face_landmarker = None
         self._model = None
         self._face_cropper = None
         self._mapper = None
         self._angle_jitter.reset()
         self._face_tracker.reset()
+        self._blink_detector.reset()
         self._last_face_score = 0.5
 
     def is_calibrated(self) -> bool:
@@ -171,6 +225,11 @@ class L2CSBackend:
         if crop is None:
             return None
 
+        # --- G2 + G6: Face Landmarker → head pose + EAR blink -----------
+        head_pose_rad, is_blink = self._extract_landmarks_pose_blink(frame_rgb)
+        if is_blink:
+            quality |= GazeQuality.BLINK
+
         try:
             angles = self._model.predict(crop)
         except (RuntimeError, ValueError):
@@ -179,7 +238,7 @@ class L2CSBackend:
         if angles is None:
             return None
         yaw, pitch = angles
-        screen = self._mapper.predict(yaw, pitch)
+        screen = self._mapper.predict(yaw, pitch, head_pose=head_pose_rad)
         if screen is None:
             return None
         # --- G1: per-frame confidence -----------------------------------
@@ -201,16 +260,63 @@ class L2CSBackend:
             floor=cfg.floor,
             ceiling=cfg.ceiling,
         )
+        # During a confirmed blink, gaze direction is unreliable —
+        # collapse confidence to zero so confidence-weighted fusion
+        # (G3) ignores this sample on the consumer side.
+        if is_blink:
+            conf = 0.0
         return GazePrediction(
             screen_xy=(int(screen[0]), int(screen[1])),
             confidence=conf,
             yaw_pitch_deg=(yaw, pitch),
-            blink=False,
+            blink=is_blink,
+            head_pose_rad=head_pose_rad,
             backend_name=self.name,
             face_bbox_norm=face_rect,
             face_id=face_id,
             quality_flags=int(quality),
         )
+
+    def _extract_landmarks_pose_blink(
+        self,
+        frame_rgb: np.ndarray[Any, Any],
+    ) -> tuple[tuple[float, float, float] | None, bool]:
+        """Run Face Landmarker and return ``(head_pose_rad, is_blinking)``.
+
+        When the landmarker is unavailable (model missing, MediaPipe import
+        failed) returns ``(None, current_blink_state)`` so the rest of the
+        prediction pipeline keeps working — head pose drops back to None
+        in the mapper feature vector and the blink flag stays at whatever
+        the detector last reported (typically False before the first
+        successful landmark frame).
+        """
+        if self._face_landmarker is None:
+            # Still feed None into the detector so the streak / state
+            # decays naturally instead of latching on a stale True.
+            return None, self._blink_detector.update(None)
+        try:
+            import mediapipe as mp
+
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            result = self._face_landmarker.detect(mp_image)
+        except (RuntimeError, ValueError, AttributeError) as exc:
+            logger.debug("L2CSBackend: face landmarker failed: %s", exc)
+            return None, self._blink_detector.update(None)
+        face_landmarks_list = getattr(result, "face_landmarks", None)
+        if not face_landmarks_list:
+            return None, self._blink_detector.update(None)
+        h, w = frame_rgb.shape[:2]
+        if w <= 0 or h <= 0:
+            return None, self._blink_detector.update(None)
+        # Build a {landmark_id → (x_px, y_px)} dict for the helpers.
+        landmarks_norm = face_landmarks_list[0]
+        landmarks_px: dict[int, tuple[float, float]] = {
+            i: (float(p.x) * w, float(p.y) * h) for i, p in enumerate(landmarks_norm)
+        }
+        head_pose = solve_head_pose(landmarks_px, (w, h))
+        ear = mean_ear(landmarks_px)
+        is_blinking = self._blink_detector.update(ear)
+        return head_pose, is_blinking
 
     def _detect_face(
         self,

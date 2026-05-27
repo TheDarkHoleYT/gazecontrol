@@ -111,6 +111,11 @@ class Paths:
         return Paths.models() / "hand_landmarker.task"
 
     @staticmethod
+    def face_landmarker() -> Path:
+        """Return the MediaPipe face landmarker task file path."""
+        return Paths.models() / "face_landmarker.task"
+
+    @staticmethod
     def l2cs_model() -> Path:
         """Return the L2CS-Net ONNX model path."""
         return Paths.models() / "l2cs_net_gaze360.onnx"

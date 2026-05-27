@@ -499,6 +499,35 @@ class GazeSettings(BaseSettings):
             "ensemble fusion mode."
         ),
     )
+    enable_face_landmarker: bool = Field(
+        default=True,
+        description=(
+            "Run MediaPipe Face Landmarker each frame to populate head_pose_rad "
+            "(via solvePnP, G2) and detect blinks via EAR (G6). Disable for "
+            "low-end CPUs or when the face_landmarker.task model is intentionally "
+            "absent — gaze still works, but head-pose-aware mapping and blink "
+            "suppression are off."
+        ),
+    )
+    blink_closed_threshold: float = Field(
+        default=0.18,
+        gt=0.0,
+        lt=1.0,
+        description="EAR below this is treated as a possibly-closed eye (G6).",
+    )
+    blink_open_margin: float = Field(
+        default=0.04,
+        ge=0.0,
+        description=(
+            "Hysteresis margin: the eye is only considered open again once EAR "
+            "rises above closed_threshold + open_margin (G6)."
+        ),
+    )
+    blink_min_closed_frames: int = Field(
+        default=2,
+        ge=1,
+        description="Consecutive frames below the threshold required to fire a blink (G6).",
+    )
     profile: str = Field(
         default="default",
         description="Calibration profile name (saved under <user_config>/profiles).",

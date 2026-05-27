@@ -184,6 +184,10 @@ class PipelineFactory:
                 face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
                 confidence_model=gcfg.confidence_model,
                 mapper_type=gcfg.mapper_type,
+                enable_face_landmarker=gcfg.enable_face_landmarker,
+                blink_closed_threshold=gcfg.blink_closed_threshold,
+                blink_open_margin=gcfg.blink_open_margin,
+                blink_min_closed_frames=gcfg.blink_min_closed_frames,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -199,6 +203,10 @@ class PipelineFactory:
                 face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
                 confidence_model=gcfg.confidence_model,
                 mapper_type=gcfg.mapper_type,
+                enable_face_landmarker=gcfg.enable_face_landmarker,
+                blink_closed_threshold=gcfg.blink_closed_threshold,
+                blink_open_margin=gcfg.blink_open_margin,
+                blink_min_closed_frames=gcfg.blink_min_closed_frames,
             )
             return EnsembleBackend(
                 primary=primary,
