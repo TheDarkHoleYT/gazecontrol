@@ -20,8 +20,9 @@ from typing import Any
 import numpy as np
 
 from gazecontrol.errors import ModelLoadError
-from gazecontrol.gaze.backend import GazePrediction
+from gazecontrol.gaze.backend import GazePrediction, GazeQuality
 from gazecontrol.gaze.face_crop import FaceCropper
+from gazecontrol.gaze.face_tracking import FaceTracker, NormalisedBBox
 from gazecontrol.gaze.gaze_mapper import GazeMapper
 from gazecontrol.paths import Paths
 
@@ -41,6 +42,8 @@ class L2CSBackend:
         screen_h: int,
         profile_name: str = "default",
         strict: bool = False,
+        *,
+        face_lock_iou_threshold: float = 0.3,
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
@@ -51,6 +54,7 @@ class L2CSBackend:
         self._face_cropper: FaceCropper | None = None
         self._mapper: GazeMapper | None = None
         self._face_detector: Any = None
+        self._face_tracker = FaceTracker(lock_iou_threshold=face_lock_iou_threshold)
 
     def start(self) -> bool:
         """Load the ONNX model, the gaze mapper, and the face detector."""
@@ -137,7 +141,12 @@ class L2CSBackend:
         if not self._mapper.is_fitted:
             return None
 
-        face_rect = self._detect_face(frame_rgb)
+        tracked = self._detect_face(frame_rgb)
+        face_rect = tracked[0] if tracked is not None else None
+        face_id = tracked[1] if tracked is not None else None
+        quality = GazeQuality.NONE
+        if tracked is not None and tracked[2]:
+            quality |= GazeQuality.MULTI_FACE
         crop = self._face_cropper.crop_from_frame(frame_bgr, face_rect=face_rect)
         if crop is None:
             return None
@@ -159,17 +168,23 @@ class L2CSBackend:
             yaw_pitch_deg=(yaw, pitch),
             blink=False,
             backend_name=self.name,
+            face_bbox_norm=face_rect,
+            face_id=face_id,
+            quality_flags=int(quality),
         )
 
     def _detect_face(
         self,
         frame_rgb: np.ndarray[Any, Any],
-    ) -> tuple[float, float, float, float] | None:
-        """Return the largest detected face rect in normalised coords, or None.
+    ) -> tuple[NormalisedBBox, int, bool] | None:
+        """Run BlazeFace and pick the tracked face via :class:`FaceTracker`.
 
-        Uses the MediaPipe Tasks ``FaceDetector`` API. Result bounding boxes
-        are in pixel coordinates; we normalise against the frame dimensions
-        so downstream ``FaceCropper`` can pad and crop consistently.
+        Returns the winning ``(bbox_norm, face_id, multi_face)`` triple or
+        ``None`` when no face was detected (or the detector is disabled).
+        ``multi_face`` is True when at least two candidates were seen,
+        regardless of whether the lock changed — callers OR
+        :data:`GazeQuality.MULTI_FACE` into the prediction's quality
+        flags so the HUD can warn the user.
         """
         if self._face_detector is None:
             return None
@@ -184,18 +199,26 @@ class L2CSBackend:
         detections = getattr(result, "detections", None)
         if not detections:
             return None
-        best = max(
-            detections,
-            key=lambda d: d.bounding_box.width * d.bounding_box.height,
-        )
-        bb = best.bounding_box
         h, w = frame_rgb.shape[:2]
         if w <= 0 or h <= 0:
             return None
-        x_min = max(0.0, bb.origin_x / w)
-        y_min = max(0.0, bb.origin_y / h)
-        x_max = min(1.0, (bb.origin_x + bb.width) / w)
-        y_max = min(1.0, (bb.origin_y + bb.height) / h)
-        if x_max <= x_min or y_max <= y_min:
-            return None
-        return (x_min, y_min, x_max, y_max)
+        # Collect (bbox_norm, score) tuples for the FaceTracker.
+        candidates: list[tuple[NormalisedBBox, float]] = []
+        for det in detections:
+            bb = det.bounding_box
+            x_min = max(0.0, bb.origin_x / w)
+            y_min = max(0.0, bb.origin_y / h)
+            x_max = min(1.0, (bb.origin_x + bb.width) / w)
+            y_max = min(1.0, (bb.origin_y + bb.height) / h)
+            if x_max <= x_min or y_max <= y_min:
+                continue
+            # MediaPipe Tasks detections expose categories[0].score as the
+            # confidence; treat missing as 0.5 to keep the tie-break neutral.
+            score = 0.5
+            cats = getattr(det, "categories", None)
+            if cats:
+                cat_score = getattr(cats[0], "score", None)
+                if cat_score is not None:
+                    score = float(cat_score)
+            candidates.append(((x_min, y_min, x_max, y_max), score))
+        return self._face_tracker.update(candidates)

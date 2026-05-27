@@ -436,6 +436,15 @@ class GazeSettings(BaseSettings):
         default=False,
         description="Raise on missing L2CS model instead of falling back to eyetrax.",
     )
+    face_lock_iou_threshold: float = Field(
+        default=0.3,
+        gt=0.0,
+        le=1.0,
+        description=(
+            "IoU above which the multi-face tracker keeps the same face_id "
+            "across frames (G5). Lower = more lenient, more sticky."
+        ),
+    )
     profile: str = Field(
         default="default",
         description="Calibration profile name (saved under <user_config>/profiles).",

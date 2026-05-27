@@ -181,6 +181,7 @@ class PipelineFactory:
                 screen_h,
                 profile_name=gcfg.profile,
                 strict=gcfg.strict_l2cs,
+                face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -193,6 +194,7 @@ class PipelineFactory:
                 screen_h,
                 profile_name=gcfg.profile,
                 strict=False,
+                face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
             )
             return EnsembleBackend(
                 primary=primary,
