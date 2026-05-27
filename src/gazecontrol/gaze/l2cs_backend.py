@@ -98,15 +98,36 @@ class L2CSBackend:
 
     def start(self) -> bool:
         """Load the ONNX model, the gaze mapper, and the face detector."""
-        from gazecontrol.gaze.l2cs_model import L2CSModel
+        from pathlib import Path
 
-        model_path = Paths.l2cs_model()
-        if not model_path.exists():
-            msg = f"L2CS model not found at {model_path}"
-            if self._strict:
-                raise ModelLoadError(msg)
-            logger.warning("%s — L2CSBackend disabled.", msg)
-            return False
+        from gazecontrol.errors import ModelDownloadError
+        from gazecontrol.gaze.l2cs_model import L2CSModel
+        from gazecontrol.utils.model_downloader import ensure_model
+
+        # G14 — route through the pinned model registry (ADR-0007).
+        # Cached files on disk short-circuit; fresh downloads require a
+        # real sha256 in the registry (or GAZECONTROL_ALLOW_UNPINNED_MODELS=1).
+        # When ensure_model refuses, fall back to the legacy on-disk
+        # check so users who bootstrapped via tools/download_l2cs.py
+        # keep working.
+        try:
+            model_path = Path(ensure_model("l2cs_net_gaze360.onnx", Paths.models()))
+        except (ValueError, ModelDownloadError) as exc:
+            model_path = Paths.l2cs_model()
+            if not model_path.exists():
+                msg = (
+                    f"L2CS model not available via pinned registry "
+                    f"({exc}); run tools/download_l2cs.py to bootstrap."
+                )
+                if self._strict:
+                    raise ModelLoadError(msg) from exc
+                logger.warning("%s — L2CSBackend disabled.", msg)
+                return False
+            logger.info(
+                "L2CSBackend: using cached L2CS model %s (registry pin not "
+                "yet active — see ADR-0007 rotation policy).",
+                model_path,
+            )
 
         try:
             self._model = L2CSModel(str(model_path))

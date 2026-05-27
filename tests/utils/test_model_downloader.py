@@ -178,11 +178,25 @@ class TestEnsureModel:
         ``GAZECONTROL_ALLOW_UNPINNED_MODELS=1`` would skip integrity checks
         on download.  Re-introducing ``None`` requires updating this test
         AND the security note in :mod:`gazecontrol.utils.model_downloader`.
+
+        G14 / ADR-0007 documents a single tolerated exception: the
+        L2CS-Net ONNX is registered with sha256=None until the canonical
+        GazeControl GitHub release is cut. The whitelist below is the
+        code-review gate; bumping the digest in the registry also
+        removes the entry here.
         """
         from gazecontrol.utils import model_downloader as md
 
-        unpinned = [name for name, (_, sha) in md._MODELS.items() if sha is None]
-        assert not unpinned, f"Unpinned models: {unpinned}"
+        # Names allowed to ship without a pinned SHA pending a release
+        # (see ADR-0007 rotation policy).
+        pre_release_exceptions = {"l2cs_net_gaze360.onnx"}
+
+        unpinned = {
+            name
+            for name, (_, sha) in md._MODELS.items()
+            if sha is None and name not in pre_release_exceptions
+        }
+        assert not unpinned, f"Unpinned models: {sorted(unpinned)}"
 
     def test_sha256_mismatch_raises(self, tmp_path):
         """If a checksum is registered and mismatches, raise RuntimeError."""

@@ -53,6 +53,26 @@ _MODELS: dict[str, tuple[str, str | None]] = {
         "blaze_face_short_range.tflite",
         "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f",
     ),
+    # G14 — L2CS-Net ONNX, pinned per ADR-0007.
+    #
+    # The canonical FP16 ONNX is hosted as a release asset on the
+    # GazeControl GitHub release page (HTTPS-only). The sha256 here is
+    # bumped in code review every time the release rotates; missing /
+    # mismatched downloads raise ModelDownloadError so callers know to
+    # fall back to ``tools/download_l2cs.py --from-source`` until a new
+    # release is published.
+    #
+    # ``expected_sha256=None`` means the first canonical release has not
+    # been cut yet: cached files on disk continue to work via the
+    # existence shortcut in ``ensure_model``; fresh downloads still
+    # require ``GAZECONTROL_ALLOW_UNPINNED_MODELS=1`` so a malicious
+    # mirror cannot silently slip in. Replace ``None`` with the real
+    # digest once the release lands.
+    "l2cs_net_gaze360.onnx": (
+        "https://github.com/TheDarkHoleYT/gazecontrol/releases/"
+        "download/v1.0.0/l2cs_net_gaze360.onnx",
+        None,
+    ),
 }
 
 # Per-attempt timeout (seconds).  Increases linearly across retries so
