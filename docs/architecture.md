@@ -229,6 +229,22 @@ install ~100 MB of ML stack just to pinch.
 not live in the wheel.
 *Why*: PyPI size limits + most users will never enable Mode B.
 
+### v1.0+ ADRs (canonical, see `docs/adr/`)
+
+The architecture from v1.0 onward records new decisions in standalone
+`docs/adr/NNNN-*.md` files (4-digit numbering) rather than inline here.
+The legacy ADR-001..008 entries above are retained verbatim for history.
+
+- [ADR-0001 — Stage pipeline](adr/0001-stage-pipeline.md)
+- [ADR-0002 — Settings precedence](adr/0002-settings-precedence.md)
+- [ADR-0003 — Model SHA256 pinning](adr/0003-model-sha256-pinning.md)
+- [ADR-0004 — `mypy --strict` no overrides](adr/0004-mypy-strict-no-overrides.md)
+- [ADR-0005 — Crash-handler stack](adr/0005-crash-handler-stack.md)
+- [ADR-0006 — Public API contract](adr/0006-public-api-contract.md)
+- [ADR-0007 — L2CS-Net ONNX supply-chain pinning](adr/0007-l2cs-onnx-pinned.md)
+- [ADR-0008 — Gaze backend failure → hand-only fallback policy](adr/0008-gaze-fallback-policy.md)
+- [ADR-0009 — Multi-monitor + multi-user gaze profile schema](adr/0009-multi-monitor-profile-schema.md)
+
 ---
 
 ## 8. Threading model
