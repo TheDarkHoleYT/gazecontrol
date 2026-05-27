@@ -83,6 +83,12 @@ class GazeStage:
                 edge_correction_rate=gcfg.drift.edge_correction_rate,
                 implicit_alpha=gcfg.drift.implicit_alpha,
                 max_correction_px=float(gcfg.drift.max_correction_px),
+                mode=gcfg.drift.mode,
+                recenter_sample_count=gcfg.drift.recenter_sample_count,
+                convergence_window=gcfg.drift.convergence_window,
+                convergence_threshold_px=gcfg.drift.convergence_threshold_px,
+                kalman_process_noise=gcfg.drift.kalman_process_noise,
+                kalman_measurement_noise=gcfg.drift.kalman_measurement_noise,
             )
         self._fixation = FixationDetector(
             screen_px_per_degree=gcfg.px_per_deg,

@@ -332,6 +332,17 @@ class DriftCorrectorSettings(BaseModel):
     Edge snapping nudges the gaze offset when the predicted point
     overshoots the screen border. Implicit recalibration uses the
     centroid of windows the user actively interacts with as ground truth.
+
+    v1.0 (G7) additions:
+        * ``mode`` chooses how implicit-recal observations update the
+          offset state: ``"ema"`` keeps the legacy fixed-alpha update;
+          ``"kalman"`` uses a 2D Kalman gain (``K = P / (P + R)``) that
+          self-tunes the update rate as confidence grows.
+        * ``recenter_sample_count`` controls how many raw samples the
+          explicit-recenter flow averages before snapping the offset
+          (defaults to 30 ≈ 1 s @ 30 fps).
+        * ``convergence_window`` + ``convergence_threshold_px`` define
+          when :meth:`DriftCorrector.is_converged` flips to True.
     """
 
     enabled: bool = True
@@ -339,6 +350,45 @@ class DriftCorrectorSettings(BaseModel):
     edge_correction_rate: float = Field(default=0.05, gt=0.0, le=1.0)
     implicit_alpha: float = Field(default=0.08, gt=0.0, le=1.0)
     max_correction_px: int = Field(default=200, ge=0)
+    mode: Literal["ema", "kalman"] = Field(
+        default="ema",
+        description=(
+            "How implicit-recal observations update the offset state. "
+            "'ema' is the v0.7–v0.8 fixed-alpha update; 'kalman' uses a "
+            "2D Kalman gain that converges as more samples land."
+        ),
+    )
+    recenter_sample_count: int = Field(
+        default=30,
+        ge=1,
+        description="Frames of raw gaze averaged by the explicit-recenter flow.",
+    )
+    convergence_window: int = Field(
+        default=60,
+        ge=2,
+        description="How many recent offset deltas drive is_converged().",
+    )
+    convergence_threshold_px: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="Stddev of recent offset deltas below this → converged.",
+    )
+    kalman_process_noise: float = Field(
+        default=0.5,
+        gt=0.0,
+        description=(
+            "Q for the Kalman offset state (pixels²). Larger = trust new "
+            "samples more; smaller = trust the long-term offset more."
+        ),
+    )
+    kalman_measurement_noise: float = Field(
+        default=50.0,
+        gt=0.0,
+        description=(
+            "R for the Kalman observation (pixels²). Larger = each "
+            "individual recal observation is treated as noisier."
+        ),
+    )
 
 
 class GazeSettings(BaseSettings):
