@@ -134,8 +134,18 @@ def _cmd_dump_config(*, resolved: bool = False) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
-def _doctor_rows() -> tuple[list[tuple[str, bool, str]], dict[str, bool]]:
-    """Run probes and return (rows, machine-readable status dict)."""
+def _doctor_rows(
+    *,
+    functional: bool = False,
+) -> tuple[list[tuple[str, bool, str]], dict[str, bool]]:
+    """Run probes and return (rows, machine-readable status dict).
+
+    When *functional* is True the doctor additionally runs the models
+    on a dummy frame to catch installs that have the files on disk but
+    cannot actually invoke them (broken DirectML, missing CUDA, etc.).
+    The functional probes are time-budgeted so a hung model never
+    blocks the CLI for more than ~5 s.
+    """
     from gazecontrol.paths import Paths
     from gazecontrol.settings import get_settings
 
@@ -210,16 +220,170 @@ def _doctor_rows() -> tuple[list[tuple[str, bool, str]], dict[str, bool]]:
         rows.append(("PyQt6", False, "Overlay disabled — install PyQt6"))
         status["pyqt6"] = False
 
+    if functional:
+        _doctor_functional_probes(rows, status)
+
     return rows, status
 
 
-def _cmd_doctor(*, as_json: bool = False) -> int:
+def _doctor_functional_probes(
+    rows: list[tuple[str, bool, str]],
+    status: dict[str, bool],
+) -> None:
+    """Live inference probes for ``--doctor --functional`` (G13).
+
+    Each probe runs against a dummy in-memory frame and is wrapped in
+    a broad except so a single broken backend cannot mask the rest of
+    the report. Latency is recorded inline in the row's hint column.
+    """
+    import time as _time
+
+    import numpy as _np
+
+    from gazecontrol.paths import Paths
+
+    # Capture one frame from the camera (timed).
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        t0 = _time.perf_counter()
+        ok = cap.isOpened()
+        frame_ok = False
+        if ok:
+            ok2, _frame = cap.read()
+            cap.release()
+            frame_ok = bool(ok2 and _frame is not None)
+        elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+        rows.append(
+            (
+                "Camera frame capture",
+                frame_ok,
+                f"{elapsed_ms:.0f} ms" if frame_ok else "no frame received",
+            )
+        )
+        status["camera_frame"] = frame_ok
+    except Exception as exc:
+        rows.append(("Camera frame capture", False, str(exc)))
+        status["camera_frame"] = False
+
+    # Dummy MediaPipe Face Landmarker probe.
+    fl_ok = False
+    fl_hint = ""
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        lm_path = Paths.face_landmarker()
+        if not lm_path.exists():
+            fl_hint = f"Missing: {lm_path}"
+        else:
+            opts = mp_vision.FaceLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=str(lm_path)),
+                running_mode=mp_vision.RunningMode.IMAGE,
+                num_faces=1,
+            )
+            landmarker = mp_vision.FaceLandmarker.create_from_options(opts)
+            dummy = _np.zeros((224, 224, 3), dtype=_np.uint8)
+            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=dummy)
+            t0 = _time.perf_counter()
+            landmarker.detect(mp_img)
+            elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+            landmarker.close()
+            fl_ok = True
+            fl_hint = f"{elapsed_ms:.0f} ms"
+    except Exception as exc:
+        fl_hint = str(exc)
+    rows.append(("Face Landmarker inference", fl_ok, fl_hint))
+    status["face_landmarker_inference"] = fl_ok
+
+    # Dummy L2CS-Net ONNX probe — checks that the ONNX session loads
+    # and ``predict`` returns without raising. Black dummy crops legally
+    # return None (no face) so we treat anything-but-exception as OK.
+    l2cs_ok = False
+    l2cs_hint = ""
+    try:
+        from gazecontrol.gaze.l2cs_model import L2CSModel
+
+        model_path = Paths.l2cs_model()
+        if not model_path.exists():
+            l2cs_hint = f"Missing: {model_path}"
+        else:
+            model = L2CSModel(str(model_path))
+            if not model.is_loaded:
+                l2cs_hint = "ONNX session refused to initialise"
+            else:
+                bgr_dummy = _np.zeros((224, 224, 3), dtype=_np.uint8)
+                t0 = _time.perf_counter()
+                _angles = model.predict(bgr_dummy)
+                elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+                l2cs_ok = True
+                if _angles is None:
+                    l2cs_hint = f"{elapsed_ms:.0f} ms (no face — expected for dummy)"
+                else:
+                    l2cs_hint = f"{elapsed_ms:.0f} ms (yaw={_angles[0]:.1f}°)"
+    except Exception as exc:
+        l2cs_hint = str(exc)
+    rows.append(("L2CS-Net inference", l2cs_ok, l2cs_hint))
+    status["l2cs_inference"] = l2cs_ok
+
+    # Calibration staleness probe — compute mean Euclidean error of the
+    # cached training set against the current mapper. A large value
+    # suggests the user has moved since the last calibration.
+    try:
+        from gazecontrol.gaze.gaze_mapper import GazeMapper
+        from gazecontrol.settings import get_settings
+
+        s = get_settings()
+        mapper = GazeMapper()
+        v2_path = Paths.resolve_active_v2_profile(s.gaze.user_id)
+        legacy_path = Paths.gaze_profile(s.gaze.profile)
+        load_target = v2_path or (legacy_path if legacy_path.exists() else None)
+        if load_target is None:
+            rows.append(("Calibration freshness", False, "No profile loaded"))
+            status["calibration_freshness"] = False
+        elif not mapper.load(load_target):
+            rows.append(("Calibration freshness", False, f"Load failed: {load_target}"))
+            status["calibration_freshness"] = False
+        else:
+            train_angles = mapper._training_angles
+            train_targets = mapper._training_targets
+            if train_angles is None or train_targets is None:
+                rows.append(
+                    (
+                        "Calibration freshness",
+                        True,
+                        "Legacy v1 profile — recalibrate for richer telemetry",
+                    )
+                )
+                status["calibration_freshness"] = True
+            else:
+                err = mapper.compute_holdout_error(train_angles, train_targets)
+                fresh = err is not None and err < 80.0
+                rows.append(
+                    (
+                        "Calibration freshness",
+                        fresh,
+                        f"recall error {err:.1f} px" if err is not None else "n/a",
+                    )
+                )
+                status["calibration_freshness"] = bool(fresh)
+    except Exception as exc:
+        rows.append(("Calibration freshness", False, str(exc)))
+        status["calibration_freshness"] = False
+
+
+def _cmd_doctor(*, as_json: bool = False, functional: bool = False) -> int:
     """Probe hardware and print a status table.
 
     When ``as_json`` is True a machine-readable JSON object is emitted
     instead of the unicode table; the exit code is unchanged.
+    When *functional* is True the doctor also runs live inference on
+    dummy frames (G13) — useful for catching DirectML / CUDA setups
+    that resolve the model file but fail at ORT init time.
     """
-    rows, status = _doctor_rows()
+    rows, status = _doctor_rows(functional=functional)
     all_ok = all(ok or "Optional" in hint for _, ok, hint in rows)
 
     if as_json:
@@ -230,7 +394,10 @@ def _cmd_doctor(*, as_json: bool = False) -> int:
 
     COL = 32
     print(f"\n{'─' * 60}")
-    print("  gazecontrol --doctor")
+    header = "  gazecontrol --doctor"
+    if functional:
+        header += " --functional"
+    print(header)
     print(f"{'─' * 60}")
     for label, ok, hint in rows:
         icon = "✓" if ok else "✗"
@@ -419,6 +586,15 @@ def main() -> None:
         "--doctor", action="store_true", help="Probe camera, models, and dependencies."
     )
     parser.add_argument(
+        "--functional",
+        action="store_true",
+        help=(
+            "With --doctor: also run live inference probes against dummy frames "
+            "(G13). Surfaces DirectML / CUDA / ORT init failures that the "
+            "existence-only checks would miss."
+        ),
+    )
+    parser.add_argument(
         "--healthcheck",
         action="store_true",
         help="One-shot health probe (camera + models). Exit code matches error class.",
@@ -523,7 +699,7 @@ def main() -> None:
     )
 
     if args.doctor:
-        sys.exit(_cmd_doctor(as_json=args.json))
+        sys.exit(_cmd_doctor(as_json=args.json, functional=args.functional))
 
     if args.migrate_profiles:
         sys.exit(_cmd_migrate_profiles(dry_run=args.dry_run, as_json=args.json))
