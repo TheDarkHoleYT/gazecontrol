@@ -74,10 +74,16 @@ class GazeMapper:
 
     POLY_DEGREE = 2
 
-    def __init__(self, screen_w: int = 1920, screen_h: int = 1080) -> None:
+    def __init__(
+        self,
+        screen_w: int = 1920,
+        screen_h: int = 1080,
+        *,
+        mapper_type: str = "poly_ridge",
+    ) -> None:
         self._sw = screen_w
         self._sh = screen_h
-        # Coefficient arrays (saved/loaded as npz arrays).
+        # Coefficient arrays (saved/loaded as npz arrays — poly_ridge).
         self._coef_x: np.ndarray[Any, Any] | None = None
         self._intercept_x: float = 0.0
         self._coef_y: np.ndarray[Any, Any] | None = None
@@ -86,6 +92,10 @@ class GazeMapper:
         self._scaler_mean: np.ndarray[Any, Any] | None = None
         self._scaler_scale: np.ndarray[Any, Any] | None = None
         self._is_fitted: bool = False
+        # In-memory non-linear regressors (kernel_ridge / gp). Not
+        # persisted directly; rebuilt on load() from training data.
+        self._kernel_reg_x: Any = None
+        self._kernel_reg_y: Any = None
         # --- Schema v2 (ADR-0009) -----------------------------------------
         # Training data persisted inline so partial_fit / incremental
         # recalibration can refit without re-running the full grid.
@@ -93,7 +103,12 @@ class GazeMapper:
         self._training_targets: np.ndarray[Any, Any] | None = None
         self._training_head_poses: np.ndarray[Any, Any] | None = None
         # Profile metadata (mirrored into meta.json).
-        self._mapper_type: str = "poly_ridge"
+        if mapper_type not in _KNOWN_MAPPER_TYPES:
+            raise ValueError(
+                f"Unknown mapper_type {mapper_type!r}. "
+                f"Known: {sorted(_KNOWN_MAPPER_TYPES)}"
+            )
+        self._mapper_type: str = mapper_type
         self._calibrated_at: str | None = None
         self._samples_count: int = 0
         self._loo_error_px: float | None = None
@@ -175,6 +190,7 @@ class GazeMapper:
         *,
         fit_method: str = "9pt",
         holdout_error_px: float | None = None,
+        mapper_type: str | None = None,
     ) -> float:
         """Fit the mapper on calibration data.
 
@@ -189,12 +205,23 @@ class GazeMapper:
             holdout_error_px: Optional held-out validation error in pixels (computed
                               by the calibration runner when a holdout split is
                               available). Persisted alongside the LOO error.
+            mapper_type:      Override ``self._mapper_type`` for this fit. Useful when
+                              the calibration runner wants to try a non-linear
+                              kernel without rebuilding the mapper object. One of
+                              ``"poly_ridge"``, ``"kernel_ridge"``, ``"gp"``.
 
         Returns:
             Leave-one-out cross-validation error in pixels.
         """
-        from sklearn.linear_model import Ridge
         from sklearn.preprocessing import StandardScaler
+
+        if mapper_type is not None:
+            if mapper_type not in _KNOWN_MAPPER_TYPES:
+                raise ValueError(
+                    f"Unknown mapper_type {mapper_type!r}. "
+                    f"Known: {sorted(_KNOWN_MAPPER_TYPES)}"
+                )
+            self._mapper_type = mapper_type
 
         X = self._build_features(gaze_angles, head_poses)
         y_x = screen_points[:, 0]
@@ -203,23 +230,31 @@ class GazeMapper:
         scaler = StandardScaler()
         Xs = scaler.fit_transform(X)
 
-        reg_x = Ridge(alpha=1.0)
-        reg_y = Ridge(alpha=1.0)
-        reg_x.fit(Xs, y_x)
-        reg_y.fit(Xs, y_y)
+        # Dispatch on the active mapper type. poly_ridge is the legacy
+        # closed-form codepath; kernel_ridge / gp build sklearn
+        # estimators kept in memory.
+        if self._mapper_type == "poly_ridge":
+            self._fit_poly_ridge(Xs, y_x, y_y)
+        elif self._mapper_type == "kernel_ridge":
+            self._fit_kernel_ridge(Xs, y_x, y_y)
+        elif self._mapper_type == "gp":
+            self._fit_gp(Xs, y_x, y_y)
+        else:  # pragma: no cover - guarded by the ctor / kwarg check above
+            raise ValueError(f"Unknown mapper_type {self._mapper_type!r}")
 
-        # Store coefficients as plain arrays (not estimators).
-        self._coef_x = reg_x.coef_.copy()
-        self._intercept_x = float(reg_x.intercept_)
-        self._coef_y = reg_y.coef_.copy()
-        self._intercept_y = float(reg_y.intercept_)
         self._scaler_mean = scaler.mean_.copy()
         self._scaler_scale = scaler.scale_.copy()
         self._is_fitted = True
 
-        # Leave-one-out error.
+        # Leave-one-out error (poly_ridge math — works as a sanity
+        # metric across all backends even when refits are nonlinear).
         loo_error = self._loo_error(X, y_x, y_y)
-        logger.info("GazeMapper fitted: LOO error = %.1f px (%.2f°)", loo_error, loo_error / 44.0)
+        logger.info(
+            "GazeMapper fitted (%s): LOO error = %.1f px (%.2f°)",
+            self._mapper_type,
+            loo_error,
+            loo_error / 44.0,
+        )
 
         # --- Schema v2: persist training data + metadata --------------------
         self._training_angles = np.asarray(gaze_angles, dtype=np.float64).copy()
@@ -236,7 +271,6 @@ class GazeMapper:
         self._loo_error_px = float(loo_error)
         self._holdout_error_px = float(holdout_error_px) if holdout_error_px is not None else None
         self._fit_method = fit_method
-        self._mapper_type = "poly_ridge"
         self._calibrated_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
         # _user_id / _monitor_id are set explicitly by the calibration runner
         # before save(); leave whatever the caller configured.
@@ -244,6 +278,97 @@ class GazeMapper:
         # "legacy" — drop the flag so callers stop nagging the user.
         self._loaded_from_legacy_v1 = False
         return loo_error
+
+    def _fit_poly_ridge(
+        self,
+        Xs: np.ndarray[Any, Any],  # noqa: N803
+        y_x: np.ndarray[Any, Any],
+        y_y: np.ndarray[Any, Any],
+    ) -> None:
+        """Closed-form Ridge fit. Stores plain coef arrays (no estimator)."""
+        from sklearn.linear_model import Ridge
+
+        reg_x = Ridge(alpha=1.0)
+        reg_y = Ridge(alpha=1.0)
+        reg_x.fit(Xs, y_x)
+        reg_y.fit(Xs, y_y)
+        self._coef_x = reg_x.coef_.copy()
+        self._intercept_x = float(reg_x.intercept_)
+        self._coef_y = reg_y.coef_.copy()
+        self._intercept_y = float(reg_y.intercept_)
+        self._kernel_reg_x = None
+        self._kernel_reg_y = None
+
+    def _fit_kernel_ridge(
+        self,
+        Xs: np.ndarray[Any, Any],  # noqa: N803
+        y_x: np.ndarray[Any, Any],
+        y_y: np.ndarray[Any, Any],
+    ) -> None:
+        """Kernel Ridge with an RBF kernel.
+
+        Captures non-linear yaw/pitch warping (peripheral compression
+        on the screen edges) that the degree-2 polynomial cannot.
+        """
+        from sklearn.kernel_ridge import KernelRidge
+
+        # ``gamma="scale"`` is not supported by KernelRidge; pick
+        # 1 / (n_features * Xs.var()) explicitly, matching sklearn's
+        # convention for SVR.
+        var = float(Xs.var()) if Xs.size else 1.0
+        gamma = 1.0 / (Xs.shape[1] * var) if var > 0 else 1.0
+        reg_x = KernelRidge(alpha=1.0, kernel="rbf", gamma=gamma).fit(Xs, y_x)
+        reg_y = KernelRidge(alpha=1.0, kernel="rbf", gamma=gamma).fit(Xs, y_y)
+        self._kernel_reg_x = reg_x
+        self._kernel_reg_y = reg_y
+        # Keep the closed-form poly_ridge arrays as a fallback in case
+        # something downstream reads them blindly.
+        self._coef_x = np.zeros(Xs.shape[1])
+        self._coef_y = np.zeros(Xs.shape[1])
+        self._intercept_x = 0.0
+        self._intercept_y = 0.0
+
+    def _fit_gp(
+        self,
+        Xs: np.ndarray[Any, Any],  # noqa: N803
+        y_x: np.ndarray[Any, Any],
+        y_y: np.ndarray[Any, Any],
+    ) -> None:
+        """Gaussian Process with an RBF + WhiteKernel.
+
+        Exposes a per-prediction sigma via
+        :meth:`predict_with_uncertainty`, unlocking the Kalman ensemble
+        fusion mode (G3) for downstream consumers.
+        """
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
+
+        # length_scale starts roughly at the spread of the standardised
+        # features; sklearn refines it via marginal-likelihood
+        # optimisation during fit.
+        kernel = (
+            ConstantKernel(1.0, (1e-3, 1e3))
+            * RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2))
+            + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-6, 1.0))
+        )
+        reg_x = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            n_restarts_optimizer=2,
+            random_state=0,
+        ).fit(Xs, y_x)
+        reg_y = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            n_restarts_optimizer=2,
+            random_state=0,
+        ).fit(Xs, y_y)
+        self._kernel_reg_x = reg_x
+        self._kernel_reg_y = reg_y
+        self._coef_x = np.zeros(Xs.shape[1])
+        self._coef_y = np.zeros(Xs.shape[1])
+        self._intercept_x = 0.0
+        self._intercept_y = 0.0
 
     def predict(
         self,
@@ -256,6 +381,24 @@ class GazeMapper:
         Returns:
             ``(px_x, px_y)`` clamped to screen bounds, or ``None`` if not fitted.
         """
+        result = self.predict_with_uncertainty(yaw, pitch, head_pose)
+        if result is None:
+            return None
+        return result[0]
+
+    def predict_with_uncertainty(
+        self,
+        yaw: float,
+        pitch: float,
+        head_pose: tuple[float, float, float] | None = None,
+    ) -> tuple[tuple[float, float], float | None] | None:
+        """Predict screen coordinates and an optional per-prediction sigma.
+
+        Returns ``((px_x, px_y), sigma_px | None)`` clamped to screen
+        bounds, or ``None`` when the mapper is unfitted. Only the ``gp``
+        mapper type returns a finite ``sigma_px``; the others return
+        ``None`` for that field so callers can branch on it.
+        """
         if not self._is_fitted or self._scaler_mean is None:
             return None
 
@@ -264,12 +407,36 @@ class GazeMapper:
         X = self._build_features(angles, hp)
         Xs = (X - self._scaler_mean) / self._scaler_scale
 
-        px_x = float((Xs @ self._coef_x).item() + self._intercept_x)
-        px_y = float((Xs @ self._coef_y).item() + self._intercept_y)
+        sigma: float | None = None
+        if self._mapper_type == "poly_ridge":
+            assert self._coef_x is not None
+            assert self._coef_y is not None
+            px_x = float((Xs @ self._coef_x).item() + self._intercept_x)
+            px_y = float((Xs @ self._coef_y).item() + self._intercept_y)
+        elif self._mapper_type == "kernel_ridge":
+            assert self._kernel_reg_x is not None
+            assert self._kernel_reg_y is not None
+            px_x = float(self._kernel_reg_x.predict(Xs)[0])
+            px_y = float(self._kernel_reg_y.predict(Xs)[0])
+        elif self._mapper_type == "gp":
+            assert self._kernel_reg_x is not None
+            assert self._kernel_reg_y is not None
+            mu_x, std_x = self._kernel_reg_x.predict(Xs, return_std=True)
+            mu_y, std_y = self._kernel_reg_y.predict(Xs, return_std=True)
+            px_x = float(mu_x[0])
+            px_y = float(mu_y[0])
+            # Combine the two axis sigmas into a single screen-space scalar
+            # so downstream consumers (G3 Kalman ensemble) can treat it as
+            # an isotropic uncertainty.
+            import math as _math
+
+            sigma = float(_math.hypot(std_x[0], std_y[0]))
+        else:  # pragma: no cover - guarded above
+            return None
 
         px_x = max(0.0, min(float(self._sw - 1), px_x))
         px_y = max(0.0, min(float(self._sh - 1), px_y))
-        return px_x, px_y
+        return (px_x, px_y), sigma
 
     # ------------------------------------------------------------------
     # Persistence — npz + meta.json (version-stable)
@@ -473,6 +640,29 @@ class GazeMapper:
                 if "training_head_poses" in data.files:
                     th = data["training_head_poses"]
                 self._training_head_poses = th if th is not None and th.size > 0 else None
+                # Kernel / GP mappers cannot persist their estimators
+                # directly in npz (sklearn objects are not array-friendly),
+                # so we rebuild from the training data we just loaded.
+                if self._mapper_type in ("kernel_ridge", "gp"):
+                    if self._training_angles is None or self._training_targets is None:
+                        logger.warning(
+                            "GazeMapper: %s profile %s has mapper_type=%r but "
+                            "no inline training data; downgrading to poly_ridge.",
+                            self._mapper_type,
+                            npz_path,
+                            self._mapper_type,
+                        )
+                        self._mapper_type = "poly_ridge"
+                    else:
+                        try:
+                            self._refit_nonlinear_from_cache()
+                        except (ImportError, RuntimeError, ValueError):
+                            logger.exception(
+                                "GazeMapper: failed to rebuild %s estimator; "
+                                "falling back to poly_ridge for this session.",
+                                self._mapper_type,
+                            )
+                            self._mapper_type = "poly_ridge"
             else:
                 # Future schema (v3+) — refuse to load rather than guess.
                 logger.error(
@@ -562,6 +752,28 @@ class GazeMapper:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _refit_nonlinear_from_cache(self) -> None:
+        """Rebuild a kernel_ridge / gp estimator from the inline training data.
+
+        Sklearn estimators do not survive numpy serialisation; instead
+        we persist the original training samples in the v2 schema and
+        reconstruct the regressor on load. The scaler params are
+        already populated from the npz so feature building stays
+        consistent with the original fit.
+        """
+        assert self._training_angles is not None
+        assert self._training_targets is not None
+        assert self._scaler_mean is not None
+        assert self._scaler_scale is not None
+        X = self._build_features(self._training_angles, self._training_head_poses)
+        Xs = (X - self._scaler_mean) / self._scaler_scale
+        y_x = self._training_targets[:, 0]
+        y_y = self._training_targets[:, 1]
+        if self._mapper_type == "kernel_ridge":
+            self._fit_kernel_ridge(Xs, y_x, y_y)
+        elif self._mapper_type == "gp":
+            self._fit_gp(Xs, y_x, y_y)
 
     def _build_features(
         self,

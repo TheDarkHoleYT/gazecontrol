@@ -488,6 +488,17 @@ class GazeSettings(BaseSettings):
             "across frames (G5). Lower = more lenient, more sticky."
         ),
     )
+    mapper_type: Literal["poly_ridge", "kernel_ridge", "gp"] = Field(
+        default="poly_ridge",
+        description=(
+            "Regressor used by GazeMapper to convert (yaw, pitch) into screen "
+            "coordinates (G10). 'poly_ridge' is the legacy degree-2 Ridge "
+            "(fastest); 'kernel_ridge' uses an RBF kernel to capture peripheral "
+            "compression; 'gp' is a Gaussian Process that additionally exposes a "
+            "per-prediction sigma (uncertainty_px) and unlocks the Kalman "
+            "ensemble fusion mode."
+        ),
+    )
     profile: str = Field(
         default="default",
         description="Calibration profile name (saved under <user_config>/profiles).",

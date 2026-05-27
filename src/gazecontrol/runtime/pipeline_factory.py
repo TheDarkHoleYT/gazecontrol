@@ -183,6 +183,7 @@ class PipelineFactory:
                 strict=gcfg.strict_l2cs,
                 face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
                 confidence_model=gcfg.confidence_model,
+                mapper_type=gcfg.mapper_type,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -197,6 +198,7 @@ class PipelineFactory:
                 strict=False,
                 face_lock_iou_threshold=gcfg.face_lock_iou_threshold,
                 confidence_model=gcfg.confidence_model,
+                mapper_type=gcfg.mapper_type,
             )
             return EnsembleBackend(
                 primary=primary,

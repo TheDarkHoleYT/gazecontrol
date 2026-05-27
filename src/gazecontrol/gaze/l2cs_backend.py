@@ -49,11 +49,13 @@ class L2CSBackend:
         *,
         face_lock_iou_threshold: float = 0.3,
         confidence_model: ConfidenceModelSettings | None = None,
+        mapper_type: str = "poly_ridge",
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
         self._profile_name = profile_name
         self._strict = strict
+        self._mapper_type = mapper_type
 
         self._model: Any = None
         self._face_cropper: FaceCropper | None = None
@@ -88,7 +90,11 @@ class L2CSBackend:
             return False
 
         self._face_cropper = FaceCropper()
-        self._mapper = GazeMapper(screen_w=self._screen_w, screen_h=self._screen_h)
+        self._mapper = GazeMapper(
+            screen_w=self._screen_w,
+            screen_h=self._screen_h,
+            mapper_type=self._mapper_type,
+        )
 
         profile_path = Paths.gaze_profile(self._profile_name)
         if profile_path.exists():
