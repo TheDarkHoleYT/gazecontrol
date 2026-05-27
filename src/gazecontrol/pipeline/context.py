@@ -59,6 +59,12 @@ class FrameContext:
     gaze_blink: bool = False
     gaze_yaw_pitch_deg: tuple[float, float] | None = None
     face_present: bool = False
+    #: True when the gaze backend has reported missing predictions for
+    #: at least ``FusionSettings.gaze_failure_threshold_frames`` in a row
+    #: (ADR-0008, G17). PointerFusionStage already falls back to the hand
+    #: when gaze_screen is None; downstream telemetry / HUD use this flag
+    #: to surface the degraded state to the operator.
+    gaze_backend_down: bool = False
 
     # --- GestureStage outputs ---
     # hand_result: mediapipe HandLandmarkerResult or compatible (untyped upstream).

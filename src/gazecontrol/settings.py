@@ -569,6 +569,25 @@ class FusionSettings(BaseSettings):
         default=False,
         description="When hand is idle, use gaze fixation centroid for click target.",
     )
+    gaze_failure_policy: Literal["continue", "hand_only", "stop"] = Field(
+        default="hand_only",
+        description=(
+            "ADR-0008 / G17 — what the pipeline does after N consecutive "
+            "gaze-backend failures. 'continue' is legacy behaviour (keep "
+            "emitting None gaze_screen); 'hand_only' (default) flips "
+            "FrameContext.gaze_backend_down so the HUD shows a degraded "
+            "badge and PointerFusionStage routes to hand exclusively; "
+            "'stop' raises GazeBackendError and requests a clean shutdown."
+        ),
+    )
+    gaze_failure_threshold_frames: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Consecutive gaze-prediction failures required to trigger the "
+            "configured gaze_failure_policy (~330 ms at 30 fps for the default 10)."
+        ),
+    )
 
 
 class RuntimeSettings(BaseSettings):

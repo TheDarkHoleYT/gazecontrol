@@ -7,12 +7,30 @@ I-VT :class:`FixationDetector`. Its output is written to the shared
 
 Heavy resources (ONNX, MediaPipe Face Mesh) are allocated in :meth:`start`
 to honour the legacy single-thread MediaPipe contract.
+
+Failure policy (G17, ADR-0008)
+------------------------------
+After ``FusionSettings.gaze_failure_threshold_frames`` consecutive
+prediction failures (exception or ``None`` return) the stage takes one
+of three actions per ``FusionSettings.gaze_failure_policy``:
+
+* ``"continue"``  — legacy behaviour (no state change beyond logging).
+* ``"hand_only"`` — flip :attr:`FrameContext.gaze_backend_down` so HUD /
+  telemetry surface a degraded badge; PointerFusionStage already
+  routes to the hand when ``gaze_screen is None``.
+* ``"stop"``      — raise :class:`GazeBackendError` so the engine
+  shuts down cleanly via its crash-handler hook.
+
+The counter resets on the first successful prediction, emitting a
+``gaze.recovered`` INFO log line on the transition.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
+from gazecontrol.errors import GazeBackendError
 from gazecontrol.filters.one_euro import OneEuroFilter
 from gazecontrol.gaze.backend import GazeBackend, GazePrediction
 from gazecontrol.gaze.drift_corrector import DriftCorrector
@@ -21,6 +39,11 @@ from gazecontrol.pipeline.context import FrameContext
 from gazecontrol.settings import AppSettings, get_settings
 
 logger = logging.getLogger(__name__)
+
+#: Optional callback the runtime can register on the stage to receive
+#: "policy says stop" signals. Returns nothing — the engine is expected
+#: to drive its own crash-handler shutdown sequence from inside.
+StopCallback = Callable[[], None]
 
 
 class GazeStage:
@@ -34,11 +57,14 @@ class GazeStage:
         screen_w: int,
         screen_h: int,
         settings: AppSettings | None = None,
+        *,
+        on_stop_requested: StopCallback | None = None,
     ) -> None:
         self._backend = backend
         self._screen_w = screen_w
         self._screen_h = screen_h
         self._settings = settings
+        self._on_stop_requested = on_stop_requested
 
         self._filter_x: OneEuroFilter | None = None
         self._filter_y: OneEuroFilter | None = None
@@ -49,6 +75,13 @@ class GazeStage:
         self._last_valid_xy: tuple[int, int] | None = None
         self._blink_started_at: float | None = None
         self._blink_hold_max_s: float = 0.4
+
+        # G17 — failure policy state.
+        self._consecutive_failures: int = 0
+        self._failure_threshold: int = 10
+        self._failure_policy: str = "hand_only"
+        self._backend_down: bool = False
+        self._stop_requested: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -96,6 +129,13 @@ class GazeStage:
             saccade_vel_thr=gcfg.saccade_velocity_deg_s,
         )
         self._blink_hold_max_s = gcfg.blink_hold_max_s
+        # G17 — pick up fusion-side failure policy at start. Reading from
+        # s.fusion keeps the gaze settings free of pipeline-flow concerns.
+        self._failure_threshold = int(s.fusion.gaze_failure_threshold_frames)
+        self._failure_policy = s.fusion.gaze_failure_policy
+        self._consecutive_failures = 0
+        self._backend_down = False
+        self._stop_requested = False
         return True
 
     def stop(self) -> None:
@@ -140,11 +180,17 @@ class GazeStage:
             prediction = None
 
         if prediction is None:
+            self._on_failure()
             ctx.face_present = False
             ctx.gaze_screen = self._apply_blink_hold(ctx.t0, hold_active=False)
             ctx.gaze_confidence = 0.0
             ctx.gaze_blink = False
+            ctx.gaze_backend_down = self._backend_down
             return ctx
+
+        # Successful sample — reset the failure counter + degrade state.
+        self._on_recovery()
+        ctx.gaze_backend_down = self._backend_down
 
         ctx.face_present = True
         ctx.gaze_yaw_pitch_deg = prediction.yaw_pitch_deg
@@ -188,6 +234,80 @@ class GazeStage:
         ctx.gaze_confidence = prediction.confidence
         self._last_valid_xy = (x, y)
         return ctx
+
+    # ------------------------------------------------------------------
+    # Failure policy (G17, ADR-0008)
+    # ------------------------------------------------------------------
+
+    def _on_failure(self) -> None:
+        """Record a missing prediction and trigger the configured policy.
+
+        ``self._consecutive_failures`` grows monotonically until a
+        successful predict resets it. The configured policy fires
+        exactly once per degradation event (the ``backend_down`` flag
+        guards re-entry) so the HUD does not flicker between states.
+        """
+        self._consecutive_failures += 1
+        if self._consecutive_failures < self._failure_threshold:
+            return
+        if self._backend_down:
+            # Already degraded — keep state, no extra log spam.
+            return
+        self._backend_down = True
+        if self._failure_policy == "continue":
+            logger.info(
+                "GazeStage: backend silent for %d frames — policy='continue', "
+                "keeping legacy behaviour.",
+                self._consecutive_failures,
+            )
+            return
+        if self._failure_policy == "hand_only":
+            logger.warning(
+                "GazeStage: backend silent for %d frames — policy='hand_only', "
+                "routing pointer to hand exclusively until recovery.",
+                self._consecutive_failures,
+            )
+            return
+        if self._failure_policy == "stop":
+            logger.error(
+                "GazeStage: backend silent for %d frames — policy='stop', "
+                "requesting engine shutdown.",
+                self._consecutive_failures,
+            )
+            self._stop_requested = True
+            if self._on_stop_requested is not None:
+                try:
+                    self._on_stop_requested()
+                except Exception:
+                    logger.exception(
+                        "GazeStage: on_stop_requested callback raised."
+                    )
+            raise GazeBackendError(
+                f"Gaze backend silent for {self._consecutive_failures} frames "
+                f"under policy='stop'."
+            )
+
+    def _on_recovery(self) -> None:
+        """Reset failure state on a successful prediction.
+
+        Emits a single ``gaze.recovered`` INFO log line on the
+        backend_down → up transition so operators can find the recovery
+        point in structured logs.
+        """
+        if self._consecutive_failures == 0 and not self._backend_down:
+            return
+        if self._backend_down:
+            logger.info(
+                "GazeStage: backend recovered after %d missed frames.",
+                self._consecutive_failures,
+            )
+        self._consecutive_failures = 0
+        self._backend_down = False
+
+    @property
+    def backend_down(self) -> bool:
+        """True while the failure policy reports the backend as degraded."""
+        return self._backend_down
 
     # ------------------------------------------------------------------
     # Drift feedback (called by ActionStage on user-initiated actions)
