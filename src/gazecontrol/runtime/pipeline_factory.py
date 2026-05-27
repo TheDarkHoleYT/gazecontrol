@@ -188,6 +188,7 @@ class PipelineFactory:
                 blink_closed_threshold=gcfg.blink_closed_threshold,
                 blink_open_margin=gcfg.blink_open_margin,
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
+                max_replay_frames=gcfg.max_replay_frames,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -207,6 +208,7 @@ class PipelineFactory:
                 blink_closed_threshold=gcfg.blink_closed_threshold,
                 blink_open_margin=gcfg.blink_open_margin,
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
+                max_replay_frames=gcfg.max_replay_frames,
             )
             return EnsembleBackend(
                 primary=primary,

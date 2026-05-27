@@ -528,6 +528,16 @@ class GazeSettings(BaseSettings):
         ge=1,
         description="Consecutive frames below the threshold required to fire a blink (G6).",
     )
+    max_replay_frames: int = Field(
+        default=5,
+        ge=0,
+        description=(
+            "Face-detection cascade replay budget (G4): when both BlazeFace "
+            "and Face Landmarker miss, the last known bbox is reused for up "
+            "to this many frames before the cascade gives up and surfaces "
+            "'no face'. 0 disables replay entirely."
+        ),
+    )
     profile: str = Field(
         default="default",
         description="Calibration profile name (saved under <user_config>/profiles).",

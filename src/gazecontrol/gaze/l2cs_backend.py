@@ -27,6 +27,10 @@ from gazecontrol.gaze.confidence import (
     confidence_score,
     laplacian_variance,
 )
+from gazecontrol.gaze.face_cascade import (
+    FaceDetectionCascade,
+    bbox_from_landmarks_norm,
+)
 from gazecontrol.gaze.face_crop import FaceCropper
 from gazecontrol.gaze.face_tracking import FaceTracker, NormalisedBBox
 from gazecontrol.gaze.gaze_mapper import GazeMapper
@@ -56,6 +60,7 @@ class L2CSBackend:
         blink_closed_threshold: float = 0.18,
         blink_open_margin: float = 0.04,
         blink_min_closed_frames: int = 2,
+        max_replay_frames: int = 5,
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
@@ -81,6 +86,11 @@ class L2CSBackend:
             open_margin=blink_open_margin,
             min_closed_frames=blink_min_closed_frames,
         )
+        self._face_cascade = FaceDetectionCascade(max_replay_frames=max_replay_frames)
+        # Stash of normalised face landmarks from the current frame so
+        # both _detect_face (cascade fallback) and the head-pose / blink
+        # path can use them without re-running the landmarker.
+        self._cached_landmarks_norm: dict[int, tuple[float, float]] | None = None
 
     def start(self) -> bool:
         """Load the ONNX model, the gaze mapper, and the face detector."""
@@ -197,6 +207,8 @@ class L2CSBackend:
         self._angle_jitter.reset()
         self._face_tracker.reset()
         self._blink_detector.reset()
+        self._face_cascade.reset()
+        self._cached_landmarks_norm = None
         self._last_face_score = 0.5
 
     def is_calibrated(self) -> bool:
@@ -215,18 +227,45 @@ class L2CSBackend:
         if not self._mapper.is_fitted:
             return None
 
+        # --- G2 + G4 + G6 — landmarks first, then cascade, then HP/blink ---
+        # Running the Face Landmarker before the cascade lets the cascade
+        # use its bounding box as a Tier 2 fallback when BlazeFace misses.
+        self._run_face_landmarker(frame_rgb)
+        landmarker_bbox = (
+            bbox_from_landmarks_norm(self._cached_landmarks_norm)
+            if self._cached_landmarks_norm
+            else None
+        )
+
         tracked = self._detect_face(frame_rgb)
-        face_rect = tracked[0] if tracked is not None else None
+        blaze_bbox = tracked[0] if tracked is not None else None
         face_id = tracked[1] if tracked is not None else None
+        multi = bool(tracked[2]) if tracked is not None else False
+
+        outcome = self._face_cascade.step(
+            blaze_bbox=blaze_bbox,
+            landmarker_bbox=landmarker_bbox,
+        )
+        if outcome is None:
+            return None
+        face_rect = outcome.bbox
         quality = GazeQuality.NONE
-        if tracked is not None and tracked[2]:
+        if multi:
             quality |= GazeQuality.MULTI_FACE
+        if outcome.tier != "blaze":
+            # The primary detector missed — mark the frame as partially
+            # occluded so the HUD / telemetry can react. We re-use the
+            # OCCLUDED bit rather than introducing a new flag because
+            # the downstream meaning is identical ("trust this sample less").
+            quality |= GazeQuality.OCCLUDED
+
         crop = self._face_cropper.crop_from_frame(frame_bgr, face_rect=face_rect)
         if crop is None:
             return None
 
-        # --- G2 + G6: Face Landmarker → head pose + EAR blink -----------
-        head_pose_rad, is_blink = self._extract_landmarks_pose_blink(frame_rgb)
+        head_pose_rad, is_blink = self._head_pose_blink_from_cached(
+            (int(frame_rgb.shape[0]), int(frame_rgb.shape[1]))
+        )
         if is_blink:
             quality |= GazeQuality.BLINK
 
@@ -277,23 +316,21 @@ class L2CSBackend:
             quality_flags=int(quality),
         )
 
-    def _extract_landmarks_pose_blink(
+    def _run_face_landmarker(
         self,
         frame_rgb: np.ndarray[Any, Any],
-    ) -> tuple[tuple[float, float, float] | None, bool]:
-        """Run Face Landmarker and return ``(head_pose_rad, is_blinking)``.
+    ) -> None:
+        """Run Face Landmarker once and cache the result for later helpers.
 
-        When the landmarker is unavailable (model missing, MediaPipe import
-        failed) returns ``(None, current_blink_state)`` so the rest of the
-        prediction pipeline keeps working — head pose drops back to None
-        in the mapper feature vector and the blink flag stays at whatever
-        the detector last reported (typically False before the first
-        successful landmark frame).
+        Populates :attr:`_cached_landmarks_norm` with a
+        ``{landmark_id → (x_norm, y_norm)}`` dict (or ``None`` when the
+        landmarker is disabled / missed). Caching avoids running the
+        landmarker twice per frame (once for the cascade Tier 2 fallback,
+        once for head-pose / blink).
         """
+        self._cached_landmarks_norm = None
         if self._face_landmarker is None:
-            # Still feed None into the detector so the streak / state
-            # decays naturally instead of latching on a stale True.
-            return None, self._blink_detector.update(None)
+            return
         try:
             import mediapipe as mp
 
@@ -301,17 +338,34 @@ class L2CSBackend:
             result = self._face_landmarker.detect(mp_image)
         except (RuntimeError, ValueError, AttributeError) as exc:
             logger.debug("L2CSBackend: face landmarker failed: %s", exc)
-            return None, self._blink_detector.update(None)
+            return
         face_landmarks_list = getattr(result, "face_landmarks", None)
         if not face_landmarks_list:
+            return
+        landmarks = face_landmarks_list[0]
+        self._cached_landmarks_norm = {
+            i: (float(p.x), float(p.y)) for i, p in enumerate(landmarks)
+        }
+
+    def _head_pose_blink_from_cached(
+        self,
+        frame_shape: tuple[int, int],
+    ) -> tuple[tuple[float, float, float] | None, bool]:
+        """Derive ``(head_pose_rad, is_blinking)`` from the cached landmarks.
+
+        ``frame_shape`` is ``(height, width)`` matching ``np.ndarray.shape[:2]``.
+        Returns ``(None, blink_decay)`` when the cache is empty so the
+        blink detector's hysteresis streak decays naturally instead of
+        latching on a stale ``True``.
+        """
+        if not self._cached_landmarks_norm:
             return None, self._blink_detector.update(None)
-        h, w = frame_rgb.shape[:2]
+        h, w = frame_shape[0], frame_shape[1]
         if w <= 0 or h <= 0:
             return None, self._blink_detector.update(None)
-        # Build a {landmark_id → (x_px, y_px)} dict for the helpers.
-        landmarks_norm = face_landmarks_list[0]
         landmarks_px: dict[int, tuple[float, float]] = {
-            i: (float(p.x) * w, float(p.y) * h) for i, p in enumerate(landmarks_norm)
+            i: (xy[0] * w, xy[1] * h)
+            for i, xy in self._cached_landmarks_norm.items()
         }
         head_pose = solve_head_pose(landmarks_px, (w, h))
         ear = mean_ear(landmarks_px)
