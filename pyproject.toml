@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 authors = [{ name = "Ciro" }]
 keywords = ["hand-gesture", "gesture", "accessibility", "desktop", "pinch"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Win32 (MS Windows)",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",

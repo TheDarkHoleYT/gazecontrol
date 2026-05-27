@@ -8,7 +8,7 @@ Anything not listed in :data:`__all__` is internal and may change without
 notice between minor releases — see ``docs/adr/0006-public-api-contract.md``.
 """
 
-__version__ = "1.0.0.dev0"
+__version__ = "1.0.0"
 
 from gazecontrol.runtime.input_mode import InputMode
 from gazecontrol.settings import AppSettings, get_settings

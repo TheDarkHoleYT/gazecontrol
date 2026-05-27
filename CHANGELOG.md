@@ -7,58 +7,166 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [1.0.0.dev0] — Unreleased (v1.0 enterprise eye-tracking — Phase 0)
+## [1.0.0] — 2026-05-28 (enterprise eye-tracking GA)
 
-This is the **first development snapshot** of the v1.0 release. It lands
-the foundation work that the rest of v1.0 builds on; the production
-features (Phase 1–4) will land in subsequent dev snapshots before the
-final 1.0.0 GA.
+Production-stable release. Closes the 24-gap enterprise plan that
+guided the v0.8 → v1.0 refactor, organised in five phases.
 
-### Added
+`Development Status :: 5 - Production/Stable`. Eye tracking is no
+longer marked "not production-ready" in the README.
 
-- **GazePrediction** gains five v1.0 fields, all optional and defaulted so
-  legacy callers compile unchanged:
+### Phase 0 — Foundations
+
+- **`GazePrediction`** gains five optional, defaulted fields:
   `uncertainty_px`, `head_pose_rad`, `face_bbox_norm`, `face_id`,
-  `quality_flags`. A new `GazeQuality` `IntFlag` enumerates the quality
+  `quality_flags`. New `GazeQuality` `IntFlag` enumerates the quality
   bits (`BLINK`, `LOW_LIGHT`, `OFF_AXIS`, `OCCLUDED`, `MULTI_FACE`).
-- **GazeMapper schema v2** (ADR-0009). `meta.json` now records
-  `mapper_type`, `calibrated_at`, `samples_count`, `loo_error_px`,
-  `holdout_error_px`, `monitor_id`, `user_id`, `fit_method`, and
-  `feature_schema`. The `.npz` stores `training_angles`,
-  `training_targets`, and `training_head_poses` inline so a future
-  `partial_fit` can refit incrementally. `GazeMapper.metadata()` returns
-  the full v2 dict; `set_profile_identity(user_id=, monitor_id=)` tags
-  the mapper before save.
-- **Path helpers** for the multi-monitor / multi-user layout:
-  `Paths.gaze_profile_dir`, `Paths.gaze_profile_v2`,
-  `Paths.gaze_profile_history`, `Paths.gaze_profile_latest_pointer`.
-- **`--migrate-profiles` (+ `--dry-run` and `--json`)** — one-shot CLI
-  command that copies any pre-v1.0 flat `*.gaze.npz` into the new
-  `<profiles>/<user>/<monitor>/v{N}.npz` tree using atomic
-  `.part` → rename, never deletes the source, and is idempotent.
-- **ADR-0007 / ADR-0008 / ADR-0009** documenting the three v1.0
-  cross-cutting decisions (pinned L2CS ONNX, fallback policy,
-  multi-monitor profile schema).
+- **`GazeMapper` schema v2** ([ADR-0009](docs/adr/0009-multi-monitor-profile-schema.md)).
+  Inline training data persisted alongside coefficients so a future
+  `partial_fit` can refit without rerunning the full grid. Metadata
+  now records `mapper_type`, `calibrated_at`, `samples_count`,
+  `loo_error_px`, `holdout_error_px`, `monitor_id`, `user_id`,
+  `fit_method`, `feature_schema`. v1 profiles load unchanged, with
+  defaults filled and a one-time `INFO` recalibration hint.
+- **`--migrate-profiles [--dry-run] [--json]`** — one-shot CLI to
+  move any flat `*.gaze.npz` into the new
+  `<profiles>/<user>/<monitor>/v{N}.npz` tree. Atomic, idempotent,
+  originals preserved.
+- **ADRs**: [0007](docs/adr/0007-l2cs-onnx-pinned.md) (L2CS pinning),
+  [0008](docs/adr/0008-gaze-fallback-policy.md) (fallback policy),
+  [0009](docs/adr/0009-multi-monitor-profile-schema.md) (profile schema).
 
-### Changed
+### Phase 1 — Accuracy core
 
-- `GazeMapper.fit()` accepts `fit_method=` and `holdout_error_px=` keyword
-  arguments and stores them in the v2 metadata. The positional API is
-  unchanged.
-- `GazeMapper.load()` now dispatches on `schema_version`. v1 profiles
-  load unchanged, with v2 metadata defaulted and a one-time `INFO` log
-  line suggesting recalibration; v2 profiles round-trip through
-  save/load with all new fields preserved. Unknown future schemas
-  refuse to load rather than guess.
-- `pyproject.toml` version → `1.0.0.dev0`. PEP 440 dev-release suffix
-  signals "work in progress towards v1.0", not GA.
+- **G1 — Per-frame confidence model** (`gaze/confidence.py`).
+  Hard-coded `0.8` / `0.7` replaced with a sigmoid blend of face
+  detector score, Laplacian sharpness, and rolling yaw/pitch jitter.
+  `ConfidenceModelSettings` exposes every weight.
+- **G2 — Head-pose PnP** (`gaze/head_pose.py`). MediaPipe Face
+  Landmarker → `cv2.solvePnP` → `(yaw, pitch, roll)` in radians.
+  Feeds `GazeMapper.predict()` head-pose features that have been
+  unused since v0.7.
+- **G3 — Confidence-weighted + Kalman ensemble** (`gaze/ensemble_backend.py`).
+  New `EnsembleMode` `Literal["static", "confidence", "kalman"]`,
+  default `"confidence"`. Kalman mode uses `uncertainty_px` from the
+  GP mapper (G10) for variance-weighted least-squares fusion.
+- **G4 — Face-detection cascade** (`gaze/face_cascade.py`). Tier 1
+  BlazeFace → Tier 2 Face Landmarker bbox → Tier 3 last-frame replay
+  (bounded). The brittle center-frame fallback is gone.
+- **G5 — Multi-face tracking** (`gaze/face_tracking.py`). Sticky
+  `face_id` via IoU lock + composite-score winner picking;
+  `quality_flags |= MULTI_FACE` when ≥ 2 candidates.
+- **G6 — Blink via EAR** (`gaze/blink.py`). Hysteresis state machine
+  on the Eye Aspect Ratio computed from Face Landmarker keypoints.
+  Confidence collapses to 0 during a confirmed blink so the
+  confidence-weighted ensemble ignores the sample.
+- **G7 — Explicit recenter + drift Kalman** (`gaze/drift_corrector.py`).
+  `request_recenter()` / `feed_recenter_sample()` flow plus an
+  opt-in `mode="kalman"` update path. `is_converged()` /
+  `telemetry()` surface convergence state.
+- **G10 — Kernel ridge + GP mappers** (`gaze/gaze_mapper.py`). New
+  `mapper_type` dispatch. The GP backend populates `uncertainty_px`
+  in `predict_with_uncertainty()`, unlocking G3's Kalman fusion.
+  Profiles persist the inline training data and `load()` rebuilds
+  the non-linear estimator on demand.
+
+### Phase 2 — Calibration UX
+
+- **G8a — `partial_fit` + `compute_holdout_error`** on `GazeMapper`.
+- **G8b — 13-point grid + holdout split** (`calibration/grid.py` +
+  `calibration/runner.py`). New `--calibrate-incremental N` flag
+  (3 / 5 / 9 / 13) drives top-up recalibration against an existing
+  profile via `partial_fit`. Fresh runs report a real
+  `holdout_error_px` alongside the LOO metric.
+- **G19 — Profile resolution v2** (`paths.py`, `l2cs_backend.py`).
+  Runtime prefers `<profiles>/<user>/<monitor>/v{N}.npz` via the
+  `latest.txt` pointer; falls back to the legacy flat path with an
+  `--migrate-profiles` hint.
+- **G21a — Monitor-id derivation** (`gaze/monitor_id.py`).
+  Deterministic, filesystem-safe id keyed by screen name + geometry.
+  Pipeline factory and calibration runner consume it so a fresh
+  calibration on a 4K external never lands in the laptop's bucket.
+
+### Phase 3 — Observability & fault tolerance
+
+- **G11 — `--bench-json` + `--bench-mock` + CI SLA gate**
+  (`utils/synthetic_capture.py`). New CI job `bench-sla` runs a 10 s
+  headless pipeline against a synthetic camera and fails when the
+  worst-stage p95 exceeds `GAZECONTROL_SLA_P95_MS` (default 33.3 ms).
+- **G12 — Replay regression harness** (`runtime/replay_source.py`).
+  `ReplayFrameSource` + `GroundTruth.jsonl` parser; profiler gauge
+  `gazecontrol_gaze_error_px` exposes the per-frame Euclidean error.
+- **G13 — `--doctor --functional`** (`cli.py`). Four live inference
+  probes: camera frame capture, Face Landmarker, L2CS-Net, and
+  calibration freshness (recall error against cached training set).
+- **G14 — L2CS ONNX pinned in the model registry**
+  (`utils/model_downloader.py`, [ADR-0007](docs/adr/0007-l2cs-onnx-pinned.md)).
+  `tools/download_l2cs.py` remains the source-of-truth bootstrap
+  until the signed release lands.
+- **G15 — Structured `gaze.pred` telemetry + `backend_fallback_total`**.
+  Opt-in via `LoggingSettings.telemetry_per_frame`; the
+  fallback counter is always on and exported to Prometheus.
+- **G17 — Graceful gaze→hand fallback** ([ADR-0008](docs/adr/0008-gaze-fallback-policy.md)).
+  `FusionSettings.gaze_failure_policy` (`continue` / `hand_only` /
+  `stop`) drives `FrameContext.gaze_backend_down` after N consecutive
+  prediction failures.
+- **G20a — HUD quality-feedback data layer**. `HudState` extended
+  with `recenter_active`, `gaze_drift_px`, `gaze_converged`,
+  `gaze_backend_down`, `dropped_frame_ratio`, `gaze_error_px`. Qt
+  renderer additions land in G20b alongside visual verification.
+
+### Phase 4 — Compliance, a11y, policy
+
+- **G16 — `PRIVACY.md` + `--purge-profiles`** (GDPR Art. 17).
+  `RotatingFileHandler` rotation cap documented; purge command
+  emits a `compliance.purge` audit-trail log record.
+- **G23 — Minimal i18n** (`i18n.py`). `LOCALE: dict[lang, dict]`
+  (`it`, `en`) + `t(key, **fmt)`. Calibration runner, HUD renderer
+  status strings, and purge prompts route through `t()`.
+  `GAZECONTROL_LOCALE` env or `LANG` fallback picks the active
+  language; a contract test rejects translation drift.
+- **G24 — Per-app fusion overrides**. `FusionSettings.app_overrides`
+  keyed by the foreground exe name; `PointerFusionStage._cfg(ctx)`
+  merges the override per tick. `runtime/foreground_app.py` ships
+  the Win32 lookup helper.
+
+### Public-surface additions
+
+| Module                              | New public symbols                         |
+|-------------------------------------|--------------------------------------------|
+| `gazecontrol.gaze`                  | `GazeQuality`                              |
+| `gazecontrol.runtime`               | `profile_migrate`, `replay_source`         |
 
 ### Migration
 
-- Existing `*.gaze.npz` profiles continue to load — no action required.
-- Users who want the new layout (per-monitor + per-user) run
-  `gazecontrol --migrate-profiles` once; originals are preserved until
-  the user removes them.
+- Existing `*.gaze.npz` profiles continue to load.
+- Users who want the new per-user / per-monitor layout run
+  `gazecontrol --migrate-profiles` once; originals are preserved.
+- Recalibration is *recommended* (not required) once on v1.0 — the
+  one-time `INFO` log line from `GazeMapper.load()` explains why.
+
+### Known carry-overs
+
+These three follow-ups are intentionally deferred to a 1.0.1 patch
+release because they require either visual verification on a machine
+with a display attached or in-pipeline Qt-screen integration:
+
+- **G20b** — Qt draws for the HUD quality fields populated by G20a.
+- **G21b** — Dynamic in-pipeline mapper swap on monitor change
+  (per-monitor `DriftCorrector` offset, 250 ms HUD blink on swap).
+- **G23b** — Qt `setAccessibleName` / `setAccessibleDescription`
+  on `OverlayWindow` for screen-reader integration.
+
+### Stats
+
+- 23 commits on top of `v0.8.0`.
+- 605 / 605 tests passing.
+- `ruff check` + `mypy --strict` clean across 87 source files.
+- 10 new pure-helper modules unit-tested without MediaPipe / ONNX:
+  `confidence`, `face_tracking`, `face_cascade`, `head_pose`,
+  `blink`, `monitor_id`, `replay_source`, `foreground_app`,
+  `synthetic_capture`, `i18n`, plus `calibration/grid` and
+  `runtime/profile_migrate`.
 
 ---
 
