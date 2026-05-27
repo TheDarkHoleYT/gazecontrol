@@ -122,8 +122,83 @@ class Paths:
 
     @staticmethod
     def gaze_profile(name: str) -> Path:
-        """Return the gaze calibration profile path for *name* (.npz)."""
+        """Return the legacy (v1) gaze calibration profile path for *name*.
+
+        v1 layout is a flat file under ``profiles/``:
+            ``<profiles>/<name>.gaze.npz``
+
+        v1.0+ runtimes still read this path (backward-compat), but new
+        calibrations are written under :meth:`gaze_profile_v2` per
+        ADR-0009. Use :meth:`gaze_profile_resolve` to get whichever
+        exists for a given user/monitor.
+        """
         return Paths.profiles() / f"{name}.gaze.npz"
+
+    @staticmethod
+    def gaze_profile_dir(user_id: str = "default", monitor_id: str | None = None) -> Path:
+        """Return the v2 profile directory for ``<user>/<monitor>/``.
+
+        Per ADR-0009. When *monitor_id* is None, the per-user directory
+        ``<profiles>/<user>/`` is returned (used by the migrator to host
+        a default "primary-legacy" subdirectory for migrated v1 files).
+        Creates parents on first access.
+        """
+        base = Paths.profiles() / user_id
+        if monitor_id is not None:
+            base = base / monitor_id
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    @staticmethod
+    def gaze_profile_v2(
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
+        version: int = 1,
+    ) -> Path:
+        """Return the v2 ``.npz`` profile path ``<profiles>/<user>/<monitor>/v{N}.npz``.
+
+        Per ADR-0009. The ``.meta.json`` sidecar lives next to the
+        ``.npz`` with the same stem (``v{N}.meta.json``).
+        """
+        return Paths.gaze_profile_dir(user_id, monitor_id) / f"v{int(version)}.npz"
+
+    @staticmethod
+    def gaze_profile_history(
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
+    ) -> list[Path]:
+        """Return v{N}.npz files for a profile, sorted by N ascending.
+
+        Empty list when the directory does not exist or holds no
+        v2 profiles. Useful for the HUD ("v3 active, 2 older versions")
+        and for the ``profile migrate`` CLI command.
+        """
+        d = Paths.profiles() / user_id / monitor_id
+        if not d.is_dir():
+            return []
+        candidates: list[tuple[int, Path]] = []
+        for p in d.glob("v*.npz"):
+            try:
+                n = int(p.stem.lstrip("v"))
+            except ValueError:
+                continue
+            candidates.append((n, p))
+        candidates.sort(key=lambda x: x[0])
+        return [p for _, p in candidates]
+
+    @staticmethod
+    def gaze_profile_latest_pointer(
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
+    ) -> Path:
+        """Return the ``latest.txt`` pointer path inside a v2 profile dir.
+
+        ``latest.txt`` is a one-line file containing the active version
+        stem (e.g. ``v2``). Windows-safe alternative to symlinks
+        (ADR-0009). The file is not created automatically — callers
+        write it via atomic ``.part`` rename like the npz/meta files.
+        """
+        return Paths.gaze_profile_dir(user_id, monitor_id) / "latest.txt"
 
     @staticmethod
     def runtime_config(override: str | os.PathLike[str] | None = None) -> Path:

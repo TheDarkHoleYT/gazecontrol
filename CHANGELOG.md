@@ -7,6 +7,61 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [1.0.0.dev0] — Unreleased (v1.0 enterprise eye-tracking — Phase 0)
+
+This is the **first development snapshot** of the v1.0 release. It lands
+the foundation work that the rest of v1.0 builds on; the production
+features (Phase 1–4) will land in subsequent dev snapshots before the
+final 1.0.0 GA.
+
+### Added
+
+- **GazePrediction** gains five v1.0 fields, all optional and defaulted so
+  legacy callers compile unchanged:
+  `uncertainty_px`, `head_pose_rad`, `face_bbox_norm`, `face_id`,
+  `quality_flags`. A new `GazeQuality` `IntFlag` enumerates the quality
+  bits (`BLINK`, `LOW_LIGHT`, `OFF_AXIS`, `OCCLUDED`, `MULTI_FACE`).
+- **GazeMapper schema v2** (ADR-0009). `meta.json` now records
+  `mapper_type`, `calibrated_at`, `samples_count`, `loo_error_px`,
+  `holdout_error_px`, `monitor_id`, `user_id`, `fit_method`, and
+  `feature_schema`. The `.npz` stores `training_angles`,
+  `training_targets`, and `training_head_poses` inline so a future
+  `partial_fit` can refit incrementally. `GazeMapper.metadata()` returns
+  the full v2 dict; `set_profile_identity(user_id=, monitor_id=)` tags
+  the mapper before save.
+- **Path helpers** for the multi-monitor / multi-user layout:
+  `Paths.gaze_profile_dir`, `Paths.gaze_profile_v2`,
+  `Paths.gaze_profile_history`, `Paths.gaze_profile_latest_pointer`.
+- **`--migrate-profiles` (+ `--dry-run` and `--json`)** — one-shot CLI
+  command that copies any pre-v1.0 flat `*.gaze.npz` into the new
+  `<profiles>/<user>/<monitor>/v{N}.npz` tree using atomic
+  `.part` → rename, never deletes the source, and is idempotent.
+- **ADR-0007 / ADR-0008 / ADR-0009** documenting the three v1.0
+  cross-cutting decisions (pinned L2CS ONNX, fallback policy,
+  multi-monitor profile schema).
+
+### Changed
+
+- `GazeMapper.fit()` accepts `fit_method=` and `holdout_error_px=` keyword
+  arguments and stores them in the v2 metadata. The positional API is
+  unchanged.
+- `GazeMapper.load()` now dispatches on `schema_version`. v1 profiles
+  load unchanged, with v2 metadata defaulted and a one-time `INFO` log
+  line suggesting recalibration; v2 profiles round-trip through
+  save/load with all new fields preserved. Unknown future schemas
+  refuse to load rather than guess.
+- `pyproject.toml` version → `1.0.0.dev0`. PEP 440 dev-release suffix
+  signals "work in progress towards v1.0", not GA.
+
+### Migration
+
+- Existing `*.gaze.npz` profiles continue to load — no action required.
+- Users who want the new layout (per-monitor + per-user) run
+  `gazecontrol --migrate-profiles` once; originals are preserved until
+  the user removes them.
+
+---
+
 ## [0.8.0] — 2026-04-27 (enterprise refactor)
 
 ### Added

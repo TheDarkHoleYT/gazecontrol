@@ -4,6 +4,20 @@ Persistence format: ``.npz`` + ``.meta.json`` (version-stable; no sklearn pickle
 Backward-compatible migration from old ``.pkl`` files is provided by
 :func:`load_legacy_pkl`.
 
+Schema versions
+---------------
+- ``"1"`` (v0.7–v0.8): coefficients, intercepts, scaler params, screen size,
+  ``is_fitted`` flag. Used by all profiles created before v1.0.
+- ``"2"`` (v1.0+, ADR-0009): adds inline training data
+  (``training_angles``, ``training_targets``, optional
+  ``training_head_poses``) so :meth:`partial_fit` can incrementally
+  refit, plus metadata (``calibrated_at``, ``samples_count``,
+  ``loo_error_px``, ``holdout_error_px``, ``monitor_id``, ``user_id``,
+  ``fit_method``, ``mapper_type``, ``feature_schema``) that supports
+  per-user / per-monitor profile management and stale-calibration
+  detection. v1 files load unchanged: missing fields default and an
+  INFO log line suggests recalibration.
+
 Predict contract:
 - Returns ``(px_x, px_y)`` when fitted.
 - Returns ``None`` when unfitted — callers must handle this explicitly.
@@ -13,6 +27,7 @@ Predict contract:
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
 import json
 import logging
 import os
@@ -23,7 +38,26 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_FORMAT_VERSION = "1"
+_FORMAT_VERSION = "2"
+
+#: Mapper types known to v1.0. Future kernel/GP variants register here.
+_KNOWN_MAPPER_TYPES = frozenset({"poly_ridge", "kernel_ridge", "gp"})
+
+#: Default feature schema for the v1 polynomial-ridge mapper. Stored in
+#: meta.json so a future kernel/GP load can reconstruct the same feature
+#: vector at predict time.
+_POLY_RIDGE_FEATURE_SCHEMA: tuple[str, ...] = (
+    "yaw",
+    "pitch",
+    "yaw_sq",
+    "pitch_sq",
+    "yaw_pitch",
+)
+_POLY_RIDGE_HEAD_POSE_FEATURES: tuple[str, ...] = (
+    "head_yaw",
+    "head_pitch",
+    "head_roll",
+)
 
 
 class GazeMapper:
@@ -52,6 +86,26 @@ class GazeMapper:
         self._scaler_mean: np.ndarray[Any, Any] | None = None
         self._scaler_scale: np.ndarray[Any, Any] | None = None
         self._is_fitted: bool = False
+        # --- Schema v2 (ADR-0009) -----------------------------------------
+        # Training data persisted inline so partial_fit / incremental
+        # recalibration can refit without re-running the full grid.
+        self._training_angles: np.ndarray[Any, Any] | None = None
+        self._training_targets: np.ndarray[Any, Any] | None = None
+        self._training_head_poses: np.ndarray[Any, Any] | None = None
+        # Profile metadata (mirrored into meta.json).
+        self._mapper_type: str = "poly_ridge"
+        self._calibrated_at: str | None = None
+        self._samples_count: int = 0
+        self._loo_error_px: float | None = None
+        self._holdout_error_px: float | None = None
+        self._monitor_id: str | None = None
+        self._user_id: str = "default"
+        self._fit_method: str | None = None
+        self._feature_schema: list[str] = list(_POLY_RIDGE_FEATURE_SCHEMA)
+        # True when the profile was loaded from a pre-v1.0 schema and the
+        # missing fields were defaulted. Callers can surface this to the
+        # user (e.g. "recalibration recommended").
+        self._loaded_from_legacy_v1: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -62,18 +116,79 @@ class GazeMapper:
         """True when the mapper has been trained and can predict."""
         return self._is_fitted
 
+    @property
+    def loaded_from_legacy_v1(self) -> bool:
+        """True when ``load()`` populated v2 metadata from a v1 profile.
+
+        Callers (HUD, calibration runner) use this to suggest a
+        recalibration to the user without forcing it.
+        """
+        return self._loaded_from_legacy_v1
+
+    def metadata(self) -> dict[str, Any]:
+        """Return a copy of the v2 profile metadata as a plain dict.
+
+        Useful for diagnostics, HUD ("calibrated 3 days ago"), and the
+        ``--doctor --functional`` command. Returns defaults for every
+        field even when the mapper was loaded from a legacy v1 profile.
+        """
+        return {
+            "schema_version": _FORMAT_VERSION,
+            "mapper_type": self._mapper_type,
+            "calibrated_at": self._calibrated_at,
+            "samples_count": self._samples_count,
+            "loo_error_px": self._loo_error_px,
+            "holdout_error_px": self._holdout_error_px,
+            "monitor_id": self._monitor_id,
+            "user_id": self._user_id,
+            "fit_method": self._fit_method,
+            "feature_schema": list(self._feature_schema),
+            "screen_w": self._sw,
+            "screen_h": self._sh,
+            "is_fitted": self._is_fitted,
+            "loaded_from_legacy_v1": self._loaded_from_legacy_v1,
+        }
+
+    def set_profile_identity(
+        self,
+        *,
+        user_id: str | None = None,
+        monitor_id: str | None = None,
+    ) -> None:
+        """Tag the loaded/fitted mapper with a user/monitor identity.
+
+        Per ADR-0009 the canonical on-disk layout is
+        ``<profiles>/<user>/<monitor>/v{N}.npz``; the calibration runner
+        and the migrator call this just before :meth:`save` so the
+        metadata mirrors the path.
+        """
+        if user_id is not None:
+            self._user_id = user_id
+        if monitor_id is not None:
+            self._monitor_id = monitor_id
+
     def fit(
         self,
         gaze_angles: np.ndarray[Any, Any],
         screen_points: np.ndarray[Any, Any],
         head_poses: np.ndarray[Any, Any] | None = None,
+        *,
+        fit_method: str = "9pt",
+        holdout_error_px: float | None = None,
     ) -> float:
         """Fit the mapper on calibration data.
 
         Args:
-            gaze_angles:   (N, 2) array of (yaw, pitch) in degrees.
-            screen_points: (N, 2) array of (px_x, px_y) ground-truth screen coords.
-            head_poses:    (N, 3) optional head pose (yaw, pitch, roll) in radians.
+            gaze_angles:      (N, 2) array of (yaw, pitch) in degrees.
+            screen_points:    (N, 2) array of (px_x, px_y) ground-truth screen coords.
+            head_poses:       (N, 3) optional head pose (yaw, pitch, roll) in radians.
+            fit_method:       Label for the calibration routine that produced
+                              ``gaze_angles`` / ``screen_points`` (e.g. ``"9pt"``,
+                              ``"13pt_holdout"``, ``"incremental_3pt"``). Persisted
+                              into the v2 schema for audit / UX hints.
+            holdout_error_px: Optional held-out validation error in pixels (computed
+                              by the calibration runner when a holdout split is
+                              available). Persisted alongside the LOO error.
 
         Returns:
             Leave-one-out cross-validation error in pixels.
@@ -105,6 +220,29 @@ class GazeMapper:
         # Leave-one-out error.
         loo_error = self._loo_error(X, y_x, y_y)
         logger.info("GazeMapper fitted: LOO error = %.1f px (%.2f°)", loo_error, loo_error / 44.0)
+
+        # --- Schema v2: persist training data + metadata --------------------
+        self._training_angles = np.asarray(gaze_angles, dtype=np.float64).copy()
+        self._training_targets = np.asarray(screen_points, dtype=np.float64).copy()
+        if head_poses is not None:
+            self._training_head_poses = np.asarray(head_poses, dtype=np.float64).copy()
+            self._feature_schema = list(_POLY_RIDGE_FEATURE_SCHEMA) + list(
+                _POLY_RIDGE_HEAD_POSE_FEATURES
+            )
+        else:
+            self._training_head_poses = None
+            self._feature_schema = list(_POLY_RIDGE_FEATURE_SCHEMA)
+        self._samples_count = len(gaze_angles)
+        self._loo_error_px = float(loo_error)
+        self._holdout_error_px = float(holdout_error_px) if holdout_error_px is not None else None
+        self._fit_method = fit_method
+        self._mapper_type = "poly_ridge"
+        self._calibrated_at = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+        # _user_id / _monitor_id are set explicitly by the calibration runner
+        # before save(); leave whatever the caller configured.
+        # Once we've gone through a successful fit, the profile is no longer
+        # "legacy" — drop the flag so callers stop nagging the user.
+        self._loaded_from_legacy_v1 = False
         return loo_error
 
     def predict(
@@ -166,6 +304,21 @@ class GazeMapper:
                 intercept_y=np.array([self._intercept_y]),
                 scaler_mean=self._scaler_mean if self._scaler_mean is not None else np.array([]),
                 scaler_scale=self._scaler_scale if self._scaler_scale is not None else np.array([]),
+                # --- Schema v2 arrays (ADR-0009) -----------------------------
+                # Empty placeholder arrays are written when the data is not
+                # present so np.load() does not raise KeyError on legacy
+                # codepaths that look these keys up directly.
+                training_angles=(
+                    self._training_angles if self._training_angles is not None else np.array([])
+                ),
+                training_targets=(
+                    self._training_targets if self._training_targets is not None else np.array([])
+                ),
+                training_head_poses=(
+                    self._training_head_poses
+                    if self._training_head_poses is not None
+                    else np.array([])
+                ),
             )
             # numpy may add an extra suffix when the path already has one.
             # Resolve the actual file numpy wrote so os.replace() targets the
@@ -176,9 +329,20 @@ class GazeMapper:
 
             meta = {
                 "format_version": _FORMAT_VERSION,
+                "schema_version": _FORMAT_VERSION,  # alias used by ADR-0009
                 "screen_w": self._sw,
                 "screen_h": self._sh,
                 "is_fitted": self._is_fitted,
+                # Schema v2 metadata (ADR-0009).
+                "mapper_type": self._mapper_type,
+                "calibrated_at": self._calibrated_at,
+                "samples_count": self._samples_count,
+                "loo_error_px": self._loo_error_px,
+                "holdout_error_px": self._holdout_error_px,
+                "monitor_id": self._monitor_id,
+                "user_id": self._user_id,
+                "fit_method": self._fit_method,
+                "feature_schema": list(self._feature_schema),
             }
             meta_part.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -238,7 +402,94 @@ class GazeMapper:
                 self._is_fitted = False
             else:
                 self._is_fitted = fitted
-            logger.info("GazeMapper loaded from %s (fitted=%s)", npz_path, self._is_fitted)
+
+            # --- Schema-version dispatch (ADR-0009) -------------------------
+            # ``schema_version`` is the canonical key from v1.0; older
+            # profiles wrote ``format_version`` instead. Treat either as
+            # authoritative; "1" or missing → legacy v1 layout.
+            schema_raw = meta.get("schema_version") or meta.get("format_version") or "1"
+            schema_version = str(schema_raw)
+
+            if schema_version == "1":
+                # v1 profile loaded under v1.0+ runtime: populate v2 metadata
+                # with conservative defaults and warn the user (once) that a
+                # recalibration is recommended to take advantage of the new
+                # mapper features. Existing predict() works unchanged.
+                self._loaded_from_legacy_v1 = True
+                self._mapper_type = "poly_ridge"
+                self._calibrated_at = None
+                self._samples_count = 0
+                self._loo_error_px = None
+                self._holdout_error_px = None
+                self._monitor_id = None
+                self._user_id = meta.get("user_id", "default")
+                self._fit_method = "legacy_v1"
+                self._feature_schema = list(_POLY_RIDGE_FEATURE_SCHEMA)
+                self._training_angles = None
+                self._training_targets = None
+                self._training_head_poses = None
+                logger.info(
+                    "GazeMapper: loaded legacy v1 profile from %s; "
+                    "recalibration recommended to populate v2 metadata "
+                    "(holdout error, training data for partial_fit).",
+                    npz_path,
+                )
+            elif schema_version == "2":
+                self._loaded_from_legacy_v1 = False
+                self._mapper_type = str(meta.get("mapper_type", "poly_ridge"))
+                if self._mapper_type not in _KNOWN_MAPPER_TYPES:
+                    logger.warning(
+                        "GazeMapper: unknown mapper_type %r in %s; "
+                        "treating as poly_ridge.",
+                        self._mapper_type,
+                        npz_path,
+                    )
+                    self._mapper_type = "poly_ridge"
+                self._calibrated_at = meta.get("calibrated_at")
+                self._samples_count = int(meta.get("samples_count", 0) or 0)
+                loo = meta.get("loo_error_px")
+                self._loo_error_px = float(loo) if loo is not None else None
+                hold = meta.get("holdout_error_px")
+                self._holdout_error_px = float(hold) if hold is not None else None
+                self._monitor_id = meta.get("monitor_id")
+                self._user_id = str(meta.get("user_id", "default"))
+                self._fit_method = meta.get("fit_method")
+                feat = meta.get("feature_schema")
+                self._feature_schema = (
+                    [str(f) for f in feat]
+                    if isinstance(feat, list)
+                    else list(_POLY_RIDGE_FEATURE_SCHEMA)
+                )
+                # Training data (optional — empty placeholders OK).
+                ta = data.get("training_angles") if hasattr(data, "get") else None
+                if ta is None and "training_angles" in data.files:
+                    ta = data["training_angles"]
+                self._training_angles = ta if ta is not None and ta.size > 0 else None
+                tt = None
+                if "training_targets" in data.files:
+                    tt = data["training_targets"]
+                self._training_targets = tt if tt is not None and tt.size > 0 else None
+                th = None
+                if "training_head_poses" in data.files:
+                    th = data["training_head_poses"]
+                self._training_head_poses = th if th is not None and th.size > 0 else None
+            else:
+                # Future schema (v3+) — refuse to load rather than guess.
+                logger.error(
+                    "GazeMapper: unsupported schema_version=%r in %s; "
+                    "upgrade gazecontrol to read this profile.",
+                    schema_version,
+                    npz_path,
+                )
+                return False
+
+            logger.info(
+                "GazeMapper loaded from %s (fitted=%s, schema=%s, mapper_type=%s)",
+                npz_path,
+                self._is_fitted,
+                schema_version,
+                self._mapper_type,
+            )
             return True
         except Exception:
             logger.exception("GazeMapper: error parsing npz data from %s", npz_path)

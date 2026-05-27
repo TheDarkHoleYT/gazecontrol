@@ -8,6 +8,7 @@ in either HAND_ONLY or EYE_HAND mode.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import platform
 import signal
@@ -311,6 +312,44 @@ def _cmd_calibrate_gaze(profile: str) -> int:
     return run_gaze_calibration(profile=profile, vdesk=vdesk)
 
 
+def _cmd_migrate_profiles(*, dry_run: bool, as_json: bool) -> int:
+    """Migrate pre-v1.0 flat gaze profiles into the v2 layout (ADR-0009).
+
+    Returns the process exit code: 0 on success (including "nothing to
+    migrate"), 1 when one or more migrations errored.
+    """
+    import json as _json
+
+    from gazecontrol.runtime.profile_migrate import migrate_profiles
+
+    results = migrate_profiles(dry_run=dry_run)
+    error_count = sum(1 for r in results if r.action == "error")
+
+    if as_json:
+        payload = [
+            {
+                "source": str(r.source),
+                "target": str(r.target),
+                "action": r.action,
+                "message": r.message,
+            }
+            for r in results
+        ]
+        print(_json.dumps({"results": payload, "errors": error_count}, indent=2))
+    else:
+        if not results:
+            print("No legacy gaze profiles found — nothing to migrate.")
+        else:
+            print(f"Found {len(results)} legacy profile(s):")
+            for r in results:
+                print(f"  [{r.action:8}] {r.source} → {r.target}")
+                if r.message:
+                    print(f"           {r.message}")
+        if dry_run:
+            print("\n(dry run — no files were copied)")
+    return 1 if error_count else 0
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -325,10 +364,8 @@ def main() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
-            try:
+            with contextlib.suppress(AttributeError, OSError, ValueError):
                 reconfigure(encoding="utf-8", errors="replace")
-            except (AttributeError, OSError, ValueError):
-                pass
 
     # SIGINT raises KeyboardInterrupt as usual; SIGTERM/SIGBREAK is wired by
     # install_crash_handlers() so a registered shutdown callback can drain the
@@ -401,6 +438,20 @@ def main() -> None:
     parser.add_argument(
         "--profile", default=None, help="Calibration profile name (overrides GazeSettings.profile)."
     )
+    parser.add_argument(
+        "--migrate-profiles",
+        action="store_true",
+        help=(
+            "Migrate pre-v1.0 flat *.gaze.npz profiles into the v2 "
+            "<user>/<monitor>/v{N}.npz layout (ADR-0009) and exit. "
+            "Originals are preserved."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --migrate-profiles: report planned actions without writing.",
+    )
     args = parser.parse_args()
 
     if args.dump_config:
@@ -450,6 +501,9 @@ def main() -> None:
 
     if args.doctor:
         sys.exit(_cmd_doctor(as_json=args.json))
+
+    if args.migrate_profiles:
+        sys.exit(_cmd_migrate_profiles(dry_run=args.dry_run, as_json=args.json))
 
     if args.calibrate_gaze:
         profile = args.profile or s.gaze.profile

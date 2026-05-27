@@ -53,7 +53,20 @@ def test_public_all_matches_snapshot(module_name: str, expected: set[str]):
 
 
 def test_top_level_version_is_string():
+    """``__version__`` must be a PEP 440 string with a MAJOR.MINOR.PATCH core.
+
+    Pre-release / dev suffixes (``1.0.0.dev0``, ``1.0.0a1``, ``1.0.0rc2``)
+    are accepted — they are valid PEP 440 and required during multi-phase
+    releases such as the v1.0 enterprise rollout.
+    """
+    import re
+
     import gazecontrol
 
     assert isinstance(gazecontrol.__version__, str)
-    assert gazecontrol.__version__.count(".") == 2
+    # MAJOR.MINOR.PATCH followed by an optional PEP 440 suffix
+    # (.devN, aN/bN/rcN, +local).
+    assert re.match(
+        r"^\d+\.\d+\.\d+(\.(dev|a|b|rc)\d+|[abc]\d+|rc\d+|\+\S+)?$",
+        gazecontrol.__version__,
+    ), f"Version {gazecontrol.__version__!r} is not PEP 440 compliant."
