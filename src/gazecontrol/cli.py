@@ -422,13 +422,46 @@ def _cmd_healthcheck() -> int:
     return 0
 
 
-def _cmd_benchmark(seconds: int, mode: InputMode) -> None:
-    """Run the pipeline headless for *seconds* and print profiler percentiles."""
+def _cmd_benchmark(
+    seconds: int,
+    mode: InputMode,
+    *,
+    bench_json: str | None = None,
+    mock_camera: bool = False,
+) -> int:
+    """Run the pipeline headless for *seconds* and print profiler percentiles.
+
+    When *bench_json* is set the percentile snapshot is also written to
+    the path as a JSON object (G11) so CI can gate on it::
+
+        {
+          "ok": true,
+          "seconds": 20,
+          "mode": "hand",
+          "stages": {"capture": {"p50":..., "p95":..., "mean":...}, ...},
+          "total_mean_ms": <sum of stage means>,
+          "p95_total_ms": <max stage p95>,
+          "sla_p95_ms": <env GAZECONTROL_SLA_P95_MS or 33.3>
+        }
+
+    Returns the process exit code: 0 when ``p95_total_ms`` is below the
+    SLA budget (or no SLA is configured), 1 otherwise.
+    """
+    import json as _json
+    import os as _os
     import threading as _threading
     import time as _time
 
     from gazecontrol.runtime.pipeline_factory import PipelineFactory
     from gazecontrol.settings import get_settings
+
+    # G11 — CI flow: patch cv2.VideoCapture with a synthetic source so
+    # headless runners without a webcam can still produce the
+    # percentile snapshot the SLA gate reads.
+    if mock_camera:
+        from gazecontrol.utils.synthetic_capture import install_synthetic_capture
+
+        install_synthetic_capture()
 
     vdesk = _detect_virtual_desktop()
     built = PipelineFactory(mode=mode, vdesk=vdesk, settings=get_settings()).build()
@@ -450,12 +483,20 @@ def _cmd_benchmark(seconds: int, mode: InputMode) -> None:
     profiler = getattr(engine, "_profiler", None)
     if profiler is None:
         print("No profiler available.", file=sys.stderr)
-        return
+        return 1
     pct = profiler.percentiles()
     if not pct:
         print("No profiler data collected.", file=sys.stderr)
-        return
+        return 1
     total_mean = sum(v["mean"] for v in pct.values())
+    # G11 — pick the worst-stage p95 as the SLA metric. Stage p95s never
+    # overlap because the pipeline runs sequentially, so max(stage_p95)
+    # ≤ sum(stage_p95) and is the closest single number to a "tail
+    # latency budget per frame".
+    p95_total = max(v["p95"] for v in pct.values())
+    sla_budget = float(_os.environ.get("GAZECONTROL_SLA_P95_MS", "33.3"))
+    ok = p95_total <= sla_budget
+
     COL = 16
     print(f"\n{'─' * 60}")
     print(f"  gazecontrol --benchmark {seconds}s")
@@ -468,7 +509,40 @@ def _cmd_benchmark(seconds: int, mode: InputMode) -> None:
         )
     print(f"  {'─' * COL} {'─' * 8} {'─' * 8} {'─' * 8}")
     print(f"  {'TOTAL':<{COL}} {'':>8} {'':>8} {total_mean:>7.1f}ms")
+    print(
+        f"  p95 (worst stage) = {p95_total:.1f} ms  "
+        f"[SLA ≤ {sla_budget:.1f} ms → {'OK' if ok else 'FAIL'}]"
+    )
     print(f"{'─' * 60}\n")
+
+    if bench_json is not None:
+        payload = {
+            "ok": ok,
+            "seconds": seconds,
+            "mode": mode.value if hasattr(mode, "value") else str(mode),
+            "stages": {
+                name: {
+                    "p50": float(stats["p50"]),
+                    "p95": float(stats["p95"]),
+                    "mean": float(stats["mean"]),
+                }
+                for name, stats in pct.items()
+            },
+            "total_mean_ms": float(total_mean),
+            "p95_total_ms": float(p95_total),
+            "sla_p95_ms": float(sla_budget),
+        }
+        try:
+            from pathlib import Path
+
+            Path(bench_json).write_text(
+                _json.dumps(payload, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            print(f"Failed to write bench JSON to {bench_json}: {exc}", file=sys.stderr)
+            return 1
+
+    return 0 if ok else 1
 
 
 def _cmd_calibrate_gaze(
@@ -619,6 +693,25 @@ def main() -> None:
         help="Run pipeline headless for N seconds and print latency percentiles.",
     )
     parser.add_argument(
+        "--bench-json",
+        metavar="PATH",
+        default=None,
+        help=(
+            "With --benchmark: also dump the percentile snapshot as JSON "
+            "(G11). The exit code reflects the worst-stage p95 against "
+            "the SLA budget (env GAZECONTROL_SLA_P95_MS, default 33.3 ms)."
+        ),
+    )
+    parser.add_argument(
+        "--bench-mock",
+        action="store_true",
+        help=(
+            "With --benchmark: replace cv2.VideoCapture with a synthetic "
+            "frame source. Lets headless CI runners exercise the "
+            "pipeline + measure stage latency without a webcam (G11)."
+        ),
+    )
+    parser.add_argument(
         "--calibrate-gaze", action="store_true", help="Run the gaze calibration UI and exit."
     )
     parser.add_argument(
@@ -737,8 +830,14 @@ def main() -> None:
     logger.info("GazeControl: input mode = %s", mode.value if hasattr(mode, "value") else mode)
 
     if args.benchmark is not None:
-        _cmd_benchmark(args.benchmark, mode)
-        return
+        sys.exit(
+            _cmd_benchmark(
+                args.benchmark,
+                mode,
+                bench_json=args.bench_json,
+                mock_camera=args.bench_mock,
+            )
+        )
 
     from gazecontrol.errors import GazeControlError, exit_code_for
     from gazecontrol.runtime.pipeline_factory import PipelineFactory
