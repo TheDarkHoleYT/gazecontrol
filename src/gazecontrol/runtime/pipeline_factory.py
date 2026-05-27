@@ -199,5 +199,6 @@ class PipelineFactory:
                 secondary=secondary,
                 weight_primary=gcfg.ensemble_weight_eyetrax,
                 weight_secondary=gcfg.ensemble_weight_l2cs,
+                mode=gcfg.ensemble_mode,
             )
         raise GazeControlError(f"Unknown gaze backend: {choice!r}")

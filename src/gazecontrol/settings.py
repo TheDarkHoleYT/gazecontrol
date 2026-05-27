@@ -355,6 +355,17 @@ class GazeSettings(BaseSettings):
     )
     ensemble_weight_eyetrax: float = Field(default=0.3, ge=0.0, le=1.0)
     ensemble_weight_l2cs: float = Field(default=0.7, ge=0.0, le=1.0)
+    ensemble_mode: Literal["static", "confidence", "kalman"] = Field(
+        default="confidence",
+        description=(
+            "How the ensemble combines the two backends. 'static' keeps the "
+            "legacy fixed-weight blend (v0.7–v0.8 behaviour). 'confidence' "
+            "rescales each base weight by the per-frame backend confidence "
+            "(default in v1.0). 'kalman' uses variance-weighted least "
+            "squares when both predictions carry an uncertainty_px estimate, "
+            "and falls back to 'confidence' when one of them does not."
+        ),
+    )
     one_euro_min_cutoff: float = Field(default=1.5, gt=0.0)
     one_euro_beta: float = Field(default=0.007, ge=0.0)
     blink_hold_max_s: float = Field(
