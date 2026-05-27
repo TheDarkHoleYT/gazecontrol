@@ -279,6 +279,179 @@ class GazeMapper:
         self._loaded_from_legacy_v1 = False
         return loo_error
 
+    # ------------------------------------------------------------------
+    # Incremental refit + holdout (G8)
+    # ------------------------------------------------------------------
+
+    def partial_fit(
+        self,
+        new_angles: np.ndarray[Any, Any],
+        new_targets: np.ndarray[Any, Any],
+        new_head_poses: np.ndarray[Any, Any] | None = None,
+        *,
+        new_sample_weight: float = 1.0,
+        fit_method: str | None = None,
+    ) -> float:
+        """Incrementally extend the calibration with new samples (G8).
+
+        Combines the cached v2 training data (``training_angles`` /
+        ``training_targets`` / ``training_head_poses``) with the new
+        samples and re-runs :meth:`fit`. The original training samples
+        keep an implicit weight of 1.0; ``new_sample_weight`` controls
+        how strongly the new samples push the regressor away from the
+        existing fit. Values <1 are useful for "top-up" recalibration
+        ("I just want a small nudge after a head shift"); ≥1 lets the
+        new samples dominate when the user has clearly moved.
+
+        Args:
+            new_angles:        (M, 2) array of new (yaw, pitch) samples in degrees.
+            new_targets:       (M, 2) array of new (px_x, px_y) screen-pixel targets.
+            new_head_poses:    (M, 3) optional head pose to match the cached
+                               training schema. Required when the cached
+                               data already contains head poses;
+                               forbidden when it does not.
+            new_sample_weight: Multiplicative weight applied to *each new
+                               sample* via duplication (old samples appear
+                               once, new samples appear ``round(weight)`` times
+                               for weight ≥ 1, or are randomly subsampled
+                               for weight < 1 with a deterministic seed).
+                               Defaults to 1.0 (equal weighting).
+            fit_method:        Label written to the v2 metadata. Defaults
+                               to ``"incremental_{M}pt"`` when omitted.
+
+        Returns:
+            The LOO error of the refit, in pixels.
+        """
+        if not self._is_fitted:
+            raise RuntimeError(
+                "partial_fit requires a previously fitted mapper. "
+                "Run fit() with the initial calibration first."
+            )
+        if self._training_angles is None or self._training_targets is None:
+            raise RuntimeError(
+                "partial_fit requires cached training data — load a schema-v2 "
+                "profile or call fit() first."
+            )
+        if new_sample_weight <= 0:
+            raise ValueError(
+                f"new_sample_weight must be > 0; got {new_sample_weight!r}"
+            )
+
+        new_angles_arr = np.asarray(new_angles, dtype=np.float64)
+        new_targets_arr = np.asarray(new_targets, dtype=np.float64)
+        if new_angles_arr.shape[0] != new_targets_arr.shape[0]:
+            raise ValueError(
+                "new_angles and new_targets must have matching length; "
+                f"got {new_angles_arr.shape[0]} vs {new_targets_arr.shape[0]}"
+            )
+
+        # Head-pose schema must match what the cached profile expects.
+        has_cached_hp = self._training_head_poses is not None
+        if has_cached_hp and new_head_poses is None:
+            raise ValueError(
+                "cached profile uses head_pose features; new_head_poses required."
+            )
+        if (not has_cached_hp) and new_head_poses is not None:
+            raise ValueError(
+                "cached profile has no head_pose features; new_head_poses must be None."
+            )
+
+        # Replicate / subsample new samples per new_sample_weight.
+        new_angles_w, new_targets_w, new_hp_w = self._apply_sample_weight(
+            new_angles_arr,
+            new_targets_arr,
+            np.asarray(new_head_poses, dtype=np.float64) if new_head_poses is not None else None,
+            new_sample_weight,
+        )
+
+        combined_angles = np.vstack([self._training_angles, new_angles_w])
+        combined_targets = np.vstack([self._training_targets, new_targets_w])
+        if has_cached_hp:
+            assert self._training_head_poses is not None
+            assert new_hp_w is not None
+            combined_hp: np.ndarray[Any, Any] | None = np.vstack(
+                [self._training_head_poses, new_hp_w]
+            )
+        else:
+            combined_hp = None
+
+        label = fit_method if fit_method is not None else f"incremental_{len(new_angles_arr)}pt"
+        return self.fit(
+            combined_angles,
+            combined_targets,
+            head_poses=combined_hp,
+            fit_method=label,
+        )
+
+    @staticmethod
+    def _apply_sample_weight(
+        angles: np.ndarray[Any, Any],
+        targets: np.ndarray[Any, Any],
+        head_poses: np.ndarray[Any, Any] | None,
+        weight: float,
+    ) -> tuple[
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any] | None,
+    ]:
+        """Replicate / subsample to approximate a per-sample weight.
+
+        Pure helper — deterministic via ``np.random.default_rng(0)`` for
+        the subsample case so partial_fit is reproducible across runs.
+        Weight 1.0 returns the inputs unchanged.
+        """
+        if weight == 1.0:
+            return angles, targets, head_poses
+        if weight > 1.0:
+            reps = round(weight)
+            return (
+                np.repeat(angles, reps, axis=0),
+                np.repeat(targets, reps, axis=0),
+                np.repeat(head_poses, reps, axis=0) if head_poses is not None else None,
+            )
+        # weight < 1.0 → deterministic subsample.
+        n = len(angles)
+        keep = max(1, round(n * weight))
+        idx = np.random.default_rng(0).choice(n, size=keep, replace=False)
+        return (
+            angles[idx],
+            targets[idx],
+            head_poses[idx] if head_poses is not None else None,
+        )
+
+    def compute_holdout_error(
+        self,
+        angles: np.ndarray[Any, Any],
+        targets: np.ndarray[Any, Any],
+        head_poses: np.ndarray[Any, Any] | None = None,
+    ) -> float | None:
+        """Mean Euclidean pixel error of the current mapper on *(angles, targets)*.
+
+        Used by the calibration runner (G8 holdout split) and the
+        ``--doctor --functional`` probe to detect stale calibrations.
+        Returns ``None`` when the mapper is unfitted or any prediction
+        fails — callers should treat that as "no holdout signal".
+        """
+        if not self._is_fitted:
+            return None
+        if len(angles) == 0:
+            return 0.0
+        errors: list[float] = []
+        for i in range(len(angles)):
+            yaw, pitch = float(angles[i, 0]), float(angles[i, 1])
+            hp = (
+                (float(head_poses[i, 0]), float(head_poses[i, 1]), float(head_poses[i, 2]))
+                if head_poses is not None
+                else None
+            )
+            pred = self.predict(yaw, pitch, head_pose=hp)
+            if pred is None:
+                return None
+            errors.append(
+                float(np.hypot(pred[0] - targets[i, 0], pred[1] - targets[i, 1]))
+            )
+        return float(np.mean(errors)) if errors else 0.0
+
     def _fit_poly_ridge(
         self,
         Xs: np.ndarray[Any, Any],  # noqa: N803
