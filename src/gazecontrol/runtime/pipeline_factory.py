@@ -167,8 +167,14 @@ class PipelineFactory:
         )
 
     def _build_gaze_backend(self, screen_w: int, screen_h: int) -> GazeBackend:
+        from gazecontrol.gaze.monitor_id import detect_active_monitor_id
+
         gcfg = self._settings.gaze
         choice = gcfg.backend
+        # G21: resolve the monitor id once at startup. Dynamic in-pipeline
+        # swap on monitor change is a follow-up; today the runtime locks
+        # onto whichever screen Qt reports as primary at build time.
+        monitor_id = detect_active_monitor_id()
         if choice == "eyetrax":
             from gazecontrol.gaze.eyetrax_backend import EyetraxBackend
 
@@ -190,6 +196,7 @@ class PipelineFactory:
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
                 max_replay_frames=gcfg.max_replay_frames,
                 user_id=gcfg.user_id,
+                monitor_id=monitor_id,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -211,6 +218,7 @@ class PipelineFactory:
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
                 max_replay_frames=gcfg.max_replay_frames,
                 user_id=gcfg.user_id,
+                monitor_id=monitor_id,
             )
             return EnsembleBackend(
                 primary=primary,

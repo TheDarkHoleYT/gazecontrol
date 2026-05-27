@@ -360,12 +360,34 @@ def _run(
                 holdout_error_px=holdout_error_px,
             )
 
-    # G19: write to the v2 layout (<profiles>/<user>/<monitor>/v{N}.npz)
-    # and update the latest.txt pointer. The legacy flat path is also
-    # written so unmigrated installs keep working until they run
-    # --migrate-profiles.
+    # G19 + G21: write to the v2 layout (<profiles>/<user>/<monitor>/v{N}.npz)
+    # and update the latest.txt pointer. The monitor id is derived from
+    # the Qt screen the calibration window actually rendered on, so a
+    # session calibrated against a 4K external lands in its own bucket
+    # separate from the laptop panel. The legacy flat path is mirrored
+    # for backward-compat readers.
+    from gazecontrol.gaze.monitor_id import (
+        DEFAULT_MONITOR_ID,
+        monitor_id_from_screen_info,
+    )
+
     user_id = s.gaze.user_id
-    monitor_id = "primary-legacy"  # G21 will source this from QGuiApplication
+    try:
+        from PyQt6.QtGui import QGuiApplication
+
+        win_screen = window.screen() if hasattr(window, "screen") else None
+        if win_screen is None:
+            win_screen = QGuiApplication.primaryScreen()
+        if win_screen is not None:
+            wg = win_screen.geometry()
+            monitor_id = monitor_id_from_screen_info(
+                win_screen.name(),
+                (int(wg.x()), int(wg.y()), int(wg.width()), int(wg.height())),
+            )
+        else:
+            monitor_id = DEFAULT_MONITOR_ID
+    except (ImportError, RuntimeError):
+        monitor_id = DEFAULT_MONITOR_ID
     next_version = Paths.next_v2_profile_version(user_id, monitor_id)
     v2_path = Paths.gaze_profile_v2(user_id, monitor_id, next_version)
     mapper.set_profile_identity(user_id=user_id, monitor_id=monitor_id)
