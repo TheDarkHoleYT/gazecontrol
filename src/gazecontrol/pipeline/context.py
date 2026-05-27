@@ -79,6 +79,13 @@ class FrameContext:
     # --- PointerFusionStage outputs (HAND_ONLY mode mirrors fingertip_screen) ---
     pointer_screen: tuple[int, int] | None = None
     pointer_source: str = "hand"
+    #: Name of the executable currently in the foreground (e.g.
+    #: ``"firefox.exe"`` on Windows, ``"firefox"`` on Linux). Populated
+    #: by the upstream stage that looks up the foreground window — left
+    #: as ``None`` when no platform-specific lookup is available
+    #: (headless CI, macOS until support lands). Consumed by
+    #: ``PointerFusionStage`` via ``FusionSettings.app_overrides`` (G24).
+    foreground_app: str | None = None
 
     # --- InteractionStage outputs ---
     hovered_window: HoveredWindow | None = None

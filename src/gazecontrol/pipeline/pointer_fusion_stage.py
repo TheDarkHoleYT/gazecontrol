@@ -44,14 +44,35 @@ class PointerFusionStage:
     def stop(self) -> None:
         """No resources to release."""
 
-    def _cfg(self) -> FusionSettings:
+    def _base_cfg(self) -> FusionSettings:
         if self._settings is not None:
             return self._settings.fusion
         return get_settings().fusion
 
+    def _cfg(self, ctx: FrameContext | None = None) -> FusionSettings:
+        """Return the active :class:`FusionSettings`, possibly with per-app overrides.
+
+        G24 — when ``ctx.foreground_app`` matches a key in
+        ``FusionSettings.app_overrides`` we build a fresh
+        :class:`FusionSettings` instance whose numeric fields reflect
+        the override. Unknown override keys (typos, removed fields) are
+        ignored so a runtime mis-config never crashes the pipeline.
+        """
+        base = self._base_cfg()
+        if ctx is None or not ctx.foreground_app:
+            return base
+        override = base.app_overrides.get(ctx.foreground_app)
+        if not override:
+            return base
+        merged = base.model_dump()
+        for key, value in override.items():
+            if key in merged and not isinstance(merged[key], dict):
+                merged[key] = value
+        return FusionSettings(**merged)
+
     def process(self, ctx: FrameContext) -> FrameContext:
         """Populate ``ctx.pointer_screen`` and ``ctx.pointer_source`` for the tick."""
-        cfg = self._cfg()
+        cfg = self._cfg(ctx)
 
         hand_xy = ctx.fingertip_screen
         gaze_xy = ctx.gaze_screen
@@ -112,7 +133,7 @@ class PointerFusionStage:
         ev = ctx.gaze_event
         if ev is None or ev.type != "fixation" or ev.centroid is None:
             return None
-        if ctx.gaze_confidence < self._cfg().gaze_confidence_threshold:
+        if ctx.gaze_confidence < self._cfg(ctx).gaze_confidence_threshold:
             return None
         return (int(ev.centroid[0]), int(ev.centroid[1]))
 

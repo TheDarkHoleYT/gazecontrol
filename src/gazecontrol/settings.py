@@ -598,6 +598,17 @@ class FusionSettings(BaseSettings):
             "configured gaze_failure_policy (~330 ms at 30 fps for the default 10)."
         ),
     )
+    app_overrides: dict[str, dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "G24 — per-app threshold overrides keyed by the foreground "
+            "executable name (e.g. 'firefox.exe' or 'figma.exe'). Each "
+            "value is a partial dict that overrides any FusionSettings "
+            "numeric field for that app only — common keys: "
+            "'gaze_confidence_threshold', 'hand_confidence_threshold', "
+            "'divergence_threshold_px'. Unknown keys are ignored."
+        ),
+    )
 
 
 class RuntimeSettings(BaseSettings):
