@@ -218,14 +218,16 @@ class HUDRenderer:
         capture_ok: bool,
         hand_detected: bool,
     ) -> None:
+        from gazecontrol.i18n import t
+
         if capture_ok and hand_detected:
-            text = "● MANO RILEVATA"
+            text = t("hud.hand_detected")
             pen = self._pen_status_ok
         elif capture_ok:
-            text = "○ IN ATTESA MANO…"
+            text = t("hud.hand_waiting")
             pen = self._pen_status_wait
         else:
-            text = "✗ ERRORE CAMERA"
+            text = t("hud.camera_error")
             pen = self._pen_status_err
 
         painter.setFont(self._font_status)

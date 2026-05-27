@@ -597,12 +597,14 @@ def _cmd_purge_profiles(*, assume_yes: bool, as_json: bool) -> int:
         print("This will permanently delete:")
         for label, path in targets.items():
             print(f"  - {label}: {path}")
+        from gazecontrol.i18n import t
+
         try:
-            reply = input("Type 'yes' to confirm: ").strip().lower()
+            reply = input(t("compliance.purge.confirm_prompt")).strip().lower()
         except EOFError:
             reply = ""
         if reply != "yes":
-            print("Aborted — nothing deleted.", file=sys.stderr)
+            print(t("compliance.purge.aborted"), file=sys.stderr)
             return 1
 
     deleted: dict[str, bool] = {"profiles_dir": False, "runtime_config": False}

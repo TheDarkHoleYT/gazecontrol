@@ -33,6 +33,7 @@ from gazecontrol.calibration.grid import (
     subset_targets,
 )
 from gazecontrol.errors import CalibrationError, ModelLoadError
+from gazecontrol.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +282,10 @@ def _run(
             done = self._point_index
             total = len(grid_targets)
             p.setPen(QPen(QColor(220, 220, 220, 220)))
-            p.drawText(QPointF(40, 40), f"Calibrazione gaze: {done}/{total}")
-            p.drawText(QPointF(40, 60), "Fissa il punto verde, tieni la testa ferma.")
+            p.drawText(
+                QPointF(40, 40), t("calibration.progress", done=done, total=total)
+            )
+            p.drawText(QPointF(40, 60), t("calibration.instructions"))
             p.end()
 
     window = _CalWindow()
