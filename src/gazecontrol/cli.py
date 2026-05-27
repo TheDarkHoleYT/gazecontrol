@@ -563,6 +563,78 @@ def _cmd_calibrate_gaze(
     )
 
 
+def _cmd_purge_profiles(*, assume_yes: bool, as_json: bool) -> int:
+    """Erase every locally-stored gaze profile + the runtime config (G16).
+
+    Implements the GDPR Art.17 right-to-erasure documented in PRIVACY.md.
+    Prompts for confirmation unless ``--yes`` is passed; the prompt is
+    *not* shown when stdin is not a TTY (CI / scripts must explicitly
+    opt in with ``--yes``).
+
+    Always logs a ``compliance.purge`` event so the user-owned audit
+    trail (the log file itself) records the action.
+    """
+    import json as _json
+    import shutil
+
+    from gazecontrol.paths import Paths
+
+    profiles_dir = Paths.profiles()
+    runtime_cfg = Paths.runtime_config()
+    targets = {
+        "profiles_dir": str(profiles_dir),
+        "runtime_config": str(runtime_cfg),
+    }
+
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            print(
+                "--purge-profiles refuses to delete without --yes when stdin is "
+                "not a TTY. Add --yes to opt in.",
+                file=sys.stderr,
+            )
+            return 2
+        print("This will permanently delete:")
+        for label, path in targets.items():
+            print(f"  - {label}: {path}")
+        try:
+            reply = input("Type 'yes' to confirm: ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply != "yes":
+            print("Aborted — nothing deleted.", file=sys.stderr)
+            return 1
+
+    deleted: dict[str, bool] = {"profiles_dir": False, "runtime_config": False}
+    if profiles_dir.exists():
+        shutil.rmtree(profiles_dir, ignore_errors=True)
+        deleted["profiles_dir"] = not profiles_dir.exists()
+    if runtime_cfg.exists():
+        try:
+            runtime_cfg.unlink()
+            deleted["runtime_config"] = True
+        except OSError:
+            deleted["runtime_config"] = False
+
+    logging.getLogger("gazecontrol.compliance").info(
+        "compliance.purge",
+        extra={
+            "profiles_dir": str(profiles_dir),
+            "runtime_config": str(runtime_cfg),
+            "deleted": deleted,
+        },
+    )
+
+    if as_json:
+        print(_json.dumps({"deleted": deleted, "paths": targets}, indent=2))
+    else:
+        for label, ok in deleted.items():
+            icon = "✓" if ok else "·"
+            print(f"  {icon}  {label}: {targets[label]}")
+        print("Done.")
+    return 0
+
+
 def _cmd_migrate_profiles(*, dry_run: bool, as_json: bool) -> int:
     """Migrate pre-v1.0 flat gaze profiles into the v2 layout (ADR-0009).
 
@@ -744,6 +816,20 @@ def main() -> None:
         action="store_true",
         help="With --migrate-profiles: report planned actions without writing.",
     )
+    parser.add_argument(
+        "--purge-profiles",
+        action="store_true",
+        help=(
+            "Erase every locally-stored gaze profile + runtime.toml and "
+            "exit (G16, GDPR Art.17). Prompts for confirmation unless "
+            "--yes is passed. See PRIVACY.md for the data inventory."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --purge-profiles: skip the interactive confirmation prompt.",
+    )
     args = parser.parse_args()
 
     if args.dump_config:
@@ -796,6 +882,9 @@ def main() -> None:
 
     if args.migrate_profiles:
         sys.exit(_cmd_migrate_profiles(dry_run=args.dry_run, as_json=args.json))
+
+    if args.purge_profiles:
+        sys.exit(_cmd_purge_profiles(assume_yes=args.yes, as_json=args.json))
 
     if args.calibrate_gaze:
         profile = args.profile or s.gaze.profile
