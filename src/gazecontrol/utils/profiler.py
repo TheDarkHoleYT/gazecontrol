@@ -92,6 +92,10 @@ class PipelineProfiler:
         self._gauge_actual_fps: float = 0.0
         self._gauge_gaze_confidence: float = 0.0
         self._gauge_hand_confidence: float = 0.0
+        # G12 — per-frame replay gaze error (Euclidean px). Populated by
+        # the replay harness; ``NaN`` means "no measurement this frame"
+        # (ground truth missing or no prediction produced).
+        self._gauge_gaze_error_px: float = float("nan")
 
     # ------------------------------------------------------------------
     # Counter / gauge mutators (called from PipelineEngine + stages)
@@ -148,6 +152,18 @@ class PipelineProfiler:
                 self._gauge_gaze_confidence = float(gaze)
             if hand is not None:
                 self._gauge_hand_confidence = float(hand)
+
+    def set_gaze_error_px(self, error_px: float | None) -> None:
+        """Update the replay gaze-error gauge (G12).
+
+        ``None`` resets the gauge to ``NaN``, the textfile sentinel for
+        "no measurement available" — node_exporter renders that as a
+        gap in the graph rather than a misleading zero.
+        """
+        with self._lock:
+            self._gauge_gaze_error_px = (
+                float("nan") if error_px is None else float(error_px)
+            )
 
     # ------------------------------------------------------------------
     # Measurement
@@ -294,6 +310,7 @@ class PipelineProfiler:
             gauge_fps = self._gauge_actual_fps
             gauge_gaze = self._gauge_gaze_confidence
             gauge_hand = self._gauge_hand_confidence
+            gauge_gaze_error = self._gauge_gaze_error_px
 
         lines += [
             "# HELP gazecontrol_total_latency_ms Total pipeline latency per frame.",
@@ -323,6 +340,9 @@ class PipelineProfiler:
             "# HELP gazecontrol_hand_confidence Most recent hand confidence.",
             "# TYPE gazecontrol_hand_confidence gauge",
             f"gazecontrol_hand_confidence {gauge_hand:.3f}",
+            "# HELP gazecontrol_gaze_error_px Per-frame replay gaze error (px).",
+            "# TYPE gazecontrol_gaze_error_px gauge",
+            f"gazecontrol_gaze_error_px {gauge_gaze_error:.3f}",
             "# HELP gazecontrol_stage_errors_total Stage process() exceptions.",
             "# TYPE gazecontrol_stage_errors_total counter",
         ]
