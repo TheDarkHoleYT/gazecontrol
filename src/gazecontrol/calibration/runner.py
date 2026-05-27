@@ -360,8 +360,20 @@ def _run(
                 holdout_error_px=holdout_error_px,
             )
 
+    # G19: write to the v2 layout (<profiles>/<user>/<monitor>/v{N}.npz)
+    # and update the latest.txt pointer. The legacy flat path is also
+    # written so unmigrated installs keep working until they run
+    # --migrate-profiles.
+    user_id = s.gaze.user_id
+    monitor_id = "primary-legacy"  # G21 will source this from QGuiApplication
+    next_version = Paths.next_v2_profile_version(user_id, monitor_id)
+    v2_path = Paths.gaze_profile_v2(user_id, monitor_id, next_version)
+    mapper.set_profile_identity(user_id=user_id, monitor_id=monitor_id)
+    mapper.save(v2_path.with_suffix(""))
+    Paths.write_latest_pointer(user_id, monitor_id, next_version)
+    # Mirror to the legacy flat path for backward-compat readers.
     profile_path = Paths.gaze_profile(profile)
-    mapper.save(profile_path.with_suffix(""))  # GazeMapper.save adds .npz/.meta.json
+    mapper.save(profile_path.with_suffix(""))
     logger.info(
         "Calibration: %d samples (train), %d holdout, LOO=%.1f px, "
         "holdout=%s, method=%s → %s",

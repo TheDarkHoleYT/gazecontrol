@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import importlib.resources
 import os
 from functools import cache
@@ -204,6 +205,80 @@ class Paths:
         write it via atomic ``.part`` rename like the npz/meta files.
         """
         return Paths.gaze_profile_dir(user_id, monitor_id) / "latest.txt"
+
+    @staticmethod
+    def resolve_active_v2_profile(
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
+    ) -> Path | None:
+        """Return the active v2 profile ``.npz`` for *user_id* / *monitor_id*.
+
+        Reads ``latest.txt`` (one line, e.g. ``v3``) and returns
+        ``<profiles>/<user>/<monitor>/v3.npz`` when it exists, or
+        ``None`` when the pointer / file is missing. Falls back to the
+        newest ``v{N}.npz`` in the directory when ``latest.txt`` is
+        missing but versioned files exist — useful right after the
+        one-shot migrator (Phase 0) populates ``v1.npz`` without
+        a pointer.
+        """
+        d = Paths.profiles() / user_id / monitor_id
+        if not d.is_dir():
+            return None
+        pointer = d / "latest.txt"
+        if pointer.exists():
+            try:
+                stem = pointer.read_text(encoding="utf-8").strip()
+            except OSError:
+                stem = ""
+            if stem:
+                candidate = d / f"{stem}.npz"
+                if candidate.exists():
+                    return candidate
+        # Fallback: pick the highest v{N}.npz available.
+        history = Paths.gaze_profile_history(user_id, monitor_id)
+        return history[-1] if history else None
+
+    @staticmethod
+    def next_v2_profile_version(
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
+    ) -> int:
+        """Return the next free ``v{N}`` integer for a save.
+
+        ``1`` when no versions exist; otherwise ``max(existing) + 1``.
+        Callers persist a new fit to
+        ``Paths.gaze_profile_v2(user, monitor, version)``.
+        """
+        history = Paths.gaze_profile_history(user_id, monitor_id)
+        if not history:
+            return 1
+        try:
+            return max(int(p.stem.lstrip("v")) for p in history) + 1
+        except ValueError:
+            return len(history) + 1
+
+    @staticmethod
+    def write_latest_pointer(
+        user_id: str,
+        monitor_id: str,
+        version: int,
+    ) -> Path:
+        """Atomically write ``latest.txt`` for a v2 profile.
+
+        Uses ``.part`` + ``os.replace`` so a crashed runtime cannot
+        leave a half-written pointer that confuses
+        :meth:`resolve_active_v2_profile`.
+        """
+        target = Paths.gaze_profile_latest_pointer(user_id, monitor_id)
+        part = target.with_suffix(target.suffix + ".part")
+        try:
+            part.write_text(f"v{int(version)}\n", encoding="utf-8")
+            os.replace(part, target)
+        finally:
+            if part.exists():
+                with contextlib.suppress(OSError):
+                    part.unlink()
+        return target
 
     @staticmethod
     def runtime_config(override: str | os.PathLike[str] | None = None) -> Path:

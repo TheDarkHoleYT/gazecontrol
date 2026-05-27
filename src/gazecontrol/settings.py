@@ -542,6 +542,14 @@ class GazeSettings(BaseSettings):
         default="default",
         description="Calibration profile name (saved under <user_config>/profiles).",
     )
+    user_id: str = Field(
+        default="default",
+        description=(
+            "v2 profile user bucket (G19): profiles live at "
+            "<profiles>/<user_id>/<monitor_id>/v{N}.npz. Multi-user "
+            "deployments override this per session."
+        ),
+    )
 
 
 class FusionSettings(BaseSettings):

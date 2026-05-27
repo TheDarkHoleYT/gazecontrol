@@ -189,6 +189,7 @@ class PipelineFactory:
                 blink_open_margin=gcfg.blink_open_margin,
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
                 max_replay_frames=gcfg.max_replay_frames,
+                user_id=gcfg.user_id,
             )
         if choice == "ensemble":
             from gazecontrol.gaze.ensemble_backend import EnsembleBackend
@@ -209,6 +210,7 @@ class PipelineFactory:
                 blink_open_margin=gcfg.blink_open_margin,
                 blink_min_closed_frames=gcfg.blink_min_closed_frames,
                 max_replay_frames=gcfg.max_replay_frames,
+                user_id=gcfg.user_id,
             )
             return EnsembleBackend(
                 primary=primary,

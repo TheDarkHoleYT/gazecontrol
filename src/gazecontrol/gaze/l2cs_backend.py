@@ -61,6 +61,8 @@ class L2CSBackend:
         blink_open_margin: float = 0.04,
         blink_min_closed_frames: int = 2,
         max_replay_frames: int = 5,
+        user_id: str = "default",
+        monitor_id: str = "primary-legacy",
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
@@ -68,6 +70,8 @@ class L2CSBackend:
         self._strict = strict
         self._mapper_type = mapper_type
         self._enable_face_landmarker = bool(enable_face_landmarker)
+        self._user_id = user_id
+        self._monitor_id = monitor_id
 
         self._model: Any = None
         self._face_cropper: FaceCropper | None = None
@@ -119,14 +123,39 @@ class L2CSBackend:
             mapper_type=self._mapper_type,
         )
 
-        profile_path = Paths.gaze_profile(self._profile_name)
-        if profile_path.exists():
-            if not self._mapper.load(profile_path):
-                logger.warning("L2CSBackend: failed to load profile %s.", profile_path)
+        # G19: prefer the v2 directory layout (<profiles>/<user>/<monitor>/v{N}.npz)
+        # when available, falling back to the legacy flat ``<name>.gaze.npz``
+        # so users who have not yet run --migrate-profiles keep working.
+        v2_path = Paths.resolve_active_v2_profile(self._user_id, self._monitor_id)
+        legacy_path = Paths.gaze_profile(self._profile_name)
+        if v2_path is not None:
+            if not self._mapper.load(v2_path):
+                logger.warning("L2CSBackend: failed to load v2 profile %s.", v2_path)
+            else:
+                logger.info(
+                    "L2CSBackend: loaded v2 profile %s (user=%s monitor=%s)",
+                    v2_path,
+                    self._user_id,
+                    self._monitor_id,
+                )
+        elif legacy_path.exists():
+            if not self._mapper.load(legacy_path):
+                logger.warning(
+                    "L2CSBackend: failed to load legacy profile %s.", legacy_path
+                )
+            else:
+                logger.info(
+                    "L2CSBackend: loaded legacy profile %s — run "
+                    "--migrate-profiles to upgrade to the v2 layout.",
+                    legacy_path,
+                )
         else:
             logger.warning(
-                "L2CSBackend: gaze profile %s not found; run --calibrate-gaze.",
-                profile_path,
+                "L2CSBackend: no gaze profile found for user=%s monitor=%s "
+                "or legacy %s; run --calibrate-gaze.",
+                self._user_id,
+                self._monitor_id,
+                legacy_path,
             )
 
         try:
