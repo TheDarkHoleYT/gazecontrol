@@ -133,7 +133,7 @@ class EnsembleBackend:
     def _safe_start(self, backend: GazeBackend) -> bool:
         try:
             return bool(backend.start())
-        except (RuntimeError, OSError, ValueError):
+        except (RuntimeError, OSError, ValueError, AttributeError, ImportError):
             logger.exception("EnsembleBackend: start failed for %s.", backend.name)
             return False
 

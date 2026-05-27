@@ -320,6 +320,16 @@ def main() -> None:
     """CLI entry point — registered as ``gazecontrol`` console script."""
     from gazecontrol import __version__
 
+    # Force utf-8 on stdout/stderr so unicode glyphs in tables, dashes, and
+    # log messages don't trigger UnicodeEncodeError on Windows cp1252 consoles.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
     # SIGINT raises KeyboardInterrupt as usual; SIGTERM/SIGBREAK is wired by
     # install_crash_handlers() so a registered shutdown callback can drain the
     # pipeline cleanly.

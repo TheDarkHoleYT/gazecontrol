@@ -86,14 +86,26 @@ class L2CSBackend:
             )
 
         try:
-            import mediapipe as mp
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision as mp_vision
 
-            self._face_detector = mp.solutions.face_detection.FaceDetection(
-                model_selection=0,
-                min_detection_confidence=0.5,
-            )
-        except (ImportError, RuntimeError, OSError):
-            logger.exception("L2CSBackend: MediaPipe FaceDetection unavailable.")
+            blaze_path = Paths.blaze_face_model()
+            if not blaze_path.exists():
+                logger.warning(
+                    "L2CSBackend: BlazeFace model not found at %s; "
+                    "face detection disabled (will use centre-frame fallback).",
+                    blaze_path,
+                )
+                self._face_detector = None
+            else:
+                options = mp_vision.FaceDetectorOptions(
+                    base_options=mp_python.BaseOptions(model_asset_path=str(blaze_path)),
+                    running_mode=mp_vision.RunningMode.IMAGE,
+                    min_detection_confidence=0.5,
+                )
+                self._face_detector = mp_vision.FaceDetector.create_from_options(options)
+        except (ImportError, AttributeError, RuntimeError, OSError, ValueError):
+            logger.exception("L2CSBackend: MediaPipe FaceDetector unavailable.")
             self._face_detector = None
         return True
 
@@ -153,26 +165,37 @@ class L2CSBackend:
         self,
         frame_rgb: np.ndarray[Any, Any],
     ) -> tuple[float, float, float, float] | None:
-        """Return the largest detected face rect in normalised coords, or None."""
+        """Return the largest detected face rect in normalised coords, or None.
+
+        Uses the MediaPipe Tasks ``FaceDetector`` API. Result bounding boxes
+        are in pixel coordinates; we normalise against the frame dimensions
+        so downstream ``FaceCropper`` can pad and crop consistently.
+        """
         if self._face_detector is None:
             return None
         try:
-            result = self._face_detector.process(frame_rgb)
-        except (RuntimeError, ValueError) as exc:
+            import mediapipe as mp
+
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            result = self._face_detector.detect(mp_image)
+        except (RuntimeError, ValueError, AttributeError) as exc:
             logger.debug("L2CSBackend: face detect failed: %s", exc)
             return None
-        if not getattr(result, "detections", None):
+        detections = getattr(result, "detections", None)
+        if not detections:
             return None
         best = max(
-            result.detections,
-            key=lambda d: (
-                d.location_data.relative_bounding_box.width
-                * d.location_data.relative_bounding_box.height
-            ),
+            detections,
+            key=lambda d: d.bounding_box.width * d.bounding_box.height,
         )
-        bb = best.location_data.relative_bounding_box
-        x_min = max(0.0, bb.xmin)
-        y_min = max(0.0, bb.ymin)
-        x_max = min(1.0, bb.xmin + bb.width)
-        y_max = min(1.0, bb.ymin + bb.height)
+        bb = best.bounding_box
+        h, w = frame_rgb.shape[:2]
+        if w <= 0 or h <= 0:
+            return None
+        x_min = max(0.0, bb.origin_x / w)
+        y_min = max(0.0, bb.origin_y / h)
+        x_max = min(1.0, (bb.origin_x + bb.width) / w)
+        y_max = min(1.0, (bb.origin_y + bb.height) / h)
+        if x_max <= x_min or y_max <= y_min:
+            return None
         return (x_min, y_min, x_max, y_max)
