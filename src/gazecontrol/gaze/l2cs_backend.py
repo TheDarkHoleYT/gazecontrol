@@ -21,14 +21,18 @@ import numpy as np
 
 from gazecontrol.errors import ModelLoadError
 from gazecontrol.gaze.backend import GazePrediction, GazeQuality
+from gazecontrol.gaze.confidence import (
+    AngleJitter,
+    confidence_score,
+    laplacian_variance,
+)
 from gazecontrol.gaze.face_crop import FaceCropper
 from gazecontrol.gaze.face_tracking import FaceTracker, NormalisedBBox
 from gazecontrol.gaze.gaze_mapper import GazeMapper
 from gazecontrol.paths import Paths
+from gazecontrol.settings import ConfidenceModelSettings
 
 logger = logging.getLogger(__name__)
-
-_L2CS_CONFIDENCE = 0.8
 
 
 class L2CSBackend:
@@ -44,6 +48,7 @@ class L2CSBackend:
         strict: bool = False,
         *,
         face_lock_iou_threshold: float = 0.3,
+        confidence_model: ConfidenceModelSettings | None = None,
     ) -> None:
         self._screen_w = screen_w
         self._screen_h = screen_h
@@ -55,6 +60,12 @@ class L2CSBackend:
         self._mapper: GazeMapper | None = None
         self._face_detector: Any = None
         self._face_tracker = FaceTracker(lock_iou_threshold=face_lock_iou_threshold)
+        self._conf_cfg = confidence_model or ConfidenceModelSettings()
+        self._angle_jitter = AngleJitter(
+            window=self._conf_cfg.jitter_window,
+            jitter_saturation_deg=self._conf_cfg.jitter_saturation_deg,
+        )
+        self._last_face_score: float = 0.5
 
     def start(self) -> bool:
         """Load the ONNX model, the gaze mapper, and the face detector."""
@@ -124,6 +135,9 @@ class L2CSBackend:
         self._model = None
         self._face_cropper = None
         self._mapper = None
+        self._angle_jitter.reset()
+        self._face_tracker.reset()
+        self._last_face_score = 0.5
 
     def is_calibrated(self) -> bool:
         """True when both the model and the gaze mapper are usable."""
@@ -162,9 +176,28 @@ class L2CSBackend:
         screen = self._mapper.predict(yaw, pitch)
         if screen is None:
             return None
+        # --- G1: per-frame confidence -----------------------------------
+        # Push the new angle into the jitter buffer first so the score
+        # reflects the current sample's contribution.
+        self._angle_jitter.push(yaw, pitch)
+        sharpness = laplacian_variance(crop)
+        cfg = self._conf_cfg
+        conf = confidence_score(
+            face_score=self._last_face_score,
+            sharpness=sharpness,
+            jitter=self._angle_jitter.score(),
+            sharpness_floor=cfg.sharpness_floor,
+            sharpness_ceiling=cfg.sharpness_ceiling,
+            w_face=cfg.w_face,
+            w_sharpness=cfg.w_sharpness,
+            w_jitter=cfg.w_jitter,
+            bias=cfg.bias,
+            floor=cfg.floor,
+            ceiling=cfg.ceiling,
+        )
         return GazePrediction(
             screen_xy=(int(screen[0]), int(screen[1])),
-            confidence=_L2CS_CONFIDENCE,
+            confidence=conf,
             yaw_pitch_deg=(yaw, pitch),
             blink=False,
             backend_name=self.name,
@@ -221,4 +254,15 @@ class L2CSBackend:
                 if cat_score is not None:
                     score = float(cat_score)
             candidates.append(((x_min, y_min, x_max, y_max), score))
-        return self._face_tracker.update(candidates)
+        tracked = self._face_tracker.update(candidates)
+        # Cache the winning detection's score so predict() can feed it
+        # into the per-frame confidence model (G1).
+        if tracked is not None:
+            winner_bbox = tracked[0]
+            for bbox, score in candidates:
+                if bbox == winner_bbox:
+                    self._last_face_score = score
+                    break
+        else:
+            self._last_face_score = 0.0
+        return tracked

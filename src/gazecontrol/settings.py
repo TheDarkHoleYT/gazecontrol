@@ -326,6 +326,46 @@ class OverlaySettings(BaseSettings):
     targeting_color: tuple[int, int, int] = (0, 100, 255)
 
 
+class ConfidenceModelSettings(BaseModel):
+    """Weights for the per-frame confidence blend (G1).
+
+    Three normalised signals are combined into a logistic sigmoid:
+    the face detector score, the Laplacian variance of the cropped
+    face (sharpness), and the stddev of recent yaw/pitch samples
+    (jitter). Each weight controls how much the corresponding signal
+    moves the output confidence.
+
+    The defaults reproduce a "trust the detector first, sharpness
+    second, jitter as a tiebreaker" policy that matches the L2CS
+    upstream model card. Bump ``w_jitter`` higher in noisy lighting
+    or on a webcam with aggressive auto-exposure.
+    """
+
+    sharpness_floor: float = Field(default=50.0, ge=0.0)
+    sharpness_ceiling: float = Field(default=500.0, gt=0.0)
+    jitter_window: int = Field(default=5, ge=2)
+    jitter_saturation_deg: float = Field(default=8.0, gt=0.0)
+    w_face: float = Field(default=0.5, ge=0.0)
+    w_sharpness: float = Field(default=0.3, ge=0.0)
+    w_jitter: float = Field(default=0.2, ge=0.0)
+    bias: float = Field(
+        default=-0.5,
+        description="Sigmoid bias term — negative pushes toward lower confidence.",
+    )
+    floor: float = Field(
+        default=0.05,
+        ge=0.0,
+        lt=1.0,
+        description="Lower clip so confidence-weighted fusion never sees true zero.",
+    )
+    ceiling: float = Field(
+        default=0.95,
+        gt=0.0,
+        le=1.0,
+        description="Upper clip so a single signal cannot pin confidence to 1.",
+    )
+
+
 class DriftCorrectorSettings(BaseModel):
     """Drift-correction parameters for gaze tracking.
 
@@ -430,6 +470,9 @@ class GazeSettings(BaseSettings):
         default=44.0,
         gt=0.0,
         description="Pixels per visual degree (≈ 24'' FHD at 60 cm).",
+    )
+    confidence_model: ConfidenceModelSettings = Field(
+        default_factory=ConfidenceModelSettings
     )
     drift: DriftCorrectorSettings = Field(default_factory=DriftCorrectorSettings)
     strict_l2cs: bool = Field(
