@@ -1,15 +1,17 @@
 """Qt-based L2CS gaze calibration runner.
 
-Walks the user through a 3×3 grid of fixation targets. For each target:
+Walks the user through a calibration grid of fixation targets (9, 13,
+or a smaller incremental subset). For each target:
 
     1. Show a pulsing dot at the target screen position.
     2. Wait 1 s for the user to fixate.
     3. Capture *N* consecutive frames, run face crop + L2CS, store the
        resulting (yaw, pitch) angles paired with the target screen point.
 
-After the grid completes, fit a :class:`GazeMapper` and persist it to
-``Paths.gaze_profile(profile)``. The leave-one-out error is logged and
-returned to the caller.
+After the grid completes, fit (or :meth:`partial_fit` for incremental
+runs) a :class:`GazeMapper` and persist it to ``Paths.gaze_profile(profile)``.
+For the full 13-point flow the 4 holdout targets are split out and the
+mapper reports a real generalisation error alongside the LOO metric.
 
 This runner uses the existing :class:`FrameGrabber` (no fresh
 ``cv2.VideoCapture``) so it cannot conflict with a running pipeline.
@@ -25,22 +27,16 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from gazecontrol.calibration.grid import (
+    FULL_GRID,
+    split_train_holdout,
+    subset_targets,
+)
 from gazecontrol.errors import CalibrationError, ModelLoadError
 
 logger = logging.getLogger(__name__)
 
 
-_GRID = [
-    (0.10, 0.10),
-    (0.50, 0.10),
-    (0.90, 0.10),
-    (0.10, 0.50),
-    (0.50, 0.50),
-    (0.90, 0.50),
-    (0.10, 0.90),
-    (0.50, 0.90),
-    (0.90, 0.90),
-]
 _DWELL_S = 1.0
 _CAPTURE_FRAMES = 20
 
@@ -51,20 +47,45 @@ class CalibrationResult:
 
     success: bool
     loo_error_px: float = 0.0
+    holdout_error_px: float | None = None
     points_captured: int = 0
     profile_path: str = ""
+    fit_method: str = ""
 
 
 def run_gaze_calibration(
     profile: str,
     vdesk: tuple[int, int, int, int],
+    *,
+    subset_size: int = 13,
+    base_profile: str | None = None,
 ) -> int:
     """Run the calibration UI and persist the gaze profile.
+
+    Args:
+        profile:       Calibration profile name to write.
+        vdesk:         (left, top, width, height) of the virtual desktop.
+        subset_size:   How many grid points to capture this session
+                       (3 / 5 / 9 / 13 — see :mod:`calibration.grid`).
+                       13 is the default for a fresh calibration; smaller
+                       values drive the incremental ``--calibrate-incremental``
+                       top-up flow.
+        base_profile:  When set, the runner loads the matching profile
+                       first and calls :meth:`GazeMapper.partial_fit`
+                       instead of :meth:`fit`. Combined with a small
+                       ``subset_size`` this yields a quick "top-up"
+                       recalibration that keeps the existing samples
+                       and downweights nothing extra.
 
     Returns 0 on success, non-zero exit code on failure.
     """
     try:
-        result = _run(profile=profile, vdesk=vdesk)
+        result = _run(
+            profile=profile,
+            vdesk=vdesk,
+            subset_size=subset_size,
+            base_profile=base_profile,
+        )
     except CalibrationError as exc:
         print(f"Calibration error: {exc.user_message()}", file=sys.stderr)
         return 2
@@ -74,11 +95,24 @@ def run_gaze_calibration(
     if not result.success:
         print("Calibration did not complete.", file=sys.stderr)
         return 1
-    print(f"Calibration saved to {result.profile_path} (LOO error ≈ {result.loo_error_px:.1f} px)")
+    msg = (
+        f"Calibration saved to {result.profile_path} "
+        f"(LOO error ≈ {result.loo_error_px:.1f} px"
+    )
+    if result.holdout_error_px is not None:
+        msg += f", holdout error ≈ {result.holdout_error_px:.1f} px"
+    msg += f", method={result.fit_method})"
+    print(msg)
     return 0
 
 
-def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
+def _run(
+    profile: str,
+    vdesk: tuple[int, int, int, int],
+    *,
+    subset_size: int = 13,
+    base_profile: str | None = None,
+) -> CalibrationResult:
     import numpy as np
 
     try:
@@ -118,8 +152,27 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
     if not grabber.start():
         raise CalibrationError("Camera failed to start; close other apps using it.")
 
+    # Subset selection (G8b). For non-13 sizes the holdout split is
+    # skipped (the runner reports LOO only); for 13 the four holdout
+    # targets are tagged via their FULL_GRID index and pulled aside
+    # after capture for compute_holdout_error().
+    grid_targets = subset_targets(subset_size)
+    # If the subset is the full grid we know the FULL_GRID indices and
+    # can compute holdout error; otherwise tag all frames as "train".
+    target_indices_in_full_grid: list[int] = []
+    if subset_size == 13:
+        target_indices_in_full_grid = list(range(13))
+    else:
+        # Map each captured target back to FULL_GRID for telemetry.
+        target_indices_in_full_grid = [
+            FULL_GRID.index(t) if t in FULL_GRID else -1 for t in grid_targets
+        ]
+
     captured_angles: list[tuple[float, float]] = []
     captured_targets: list[tuple[int, int]] = []
+    # Per-frame "which FULL_GRID index" so we can split train / holdout
+    # after the grid completes (only meaningful when subset_size==13).
+    captured_target_indices: list[int] = []
 
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -131,7 +184,7 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
             self._point_index = 0
             self._dwell_started: float | None = None
             self._captures_for_current = 0
-            self._target_norm: tuple[float, float] = _GRID[0]
+            self._target_norm: tuple[float, float] = grid_targets[0]
             self._target_screen: tuple[int, int] = (0, 0)
 
             self.setWindowFlags(
@@ -179,7 +232,7 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
             self._target_screen = self._screen_pos(self._target_norm)
 
         def _tick(self) -> None:
-            if self._point_index >= len(_GRID):
+            if self._point_index >= len(grid_targets):
                 self.close()
                 return
             now = time.monotonic()
@@ -200,13 +253,16 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
                 return
             captured_angles.append(angles)
             captured_targets.append(self._target_screen)
+            captured_target_indices.append(
+                target_indices_in_full_grid[self._point_index]
+            )
             self._captures_for_current += 1
             if self._captures_for_current >= _CAPTURE_FRAMES:
                 self._captures_for_current = 0
                 self._dwell_started = None
                 self._point_index += 1
-                if self._point_index < len(_GRID):
-                    self._target_norm = _GRID[self._point_index]
+                if self._point_index < len(grid_targets):
+                    self._target_norm = grid_targets[self._point_index]
                     self._target_screen = self._screen_pos(self._target_norm)
             self.update()
 
@@ -223,7 +279,7 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(tx, ty), 28, 28)
             done = self._point_index
-            total = len(_GRID)
+            total = len(grid_targets)
             p.setPen(QPen(QColor(220, 220, 220, 220)))
             p.drawText(QPointF(40, 40), f"Calibrazione gaze: {done}/{total}")
             p.drawText(QPointF(40, 60), "Fissa il punto verde, tieni la testa ferma.")
@@ -246,23 +302,81 @@ def _run(profile: str, vdesk: tuple[int, int, int, int]) -> CalibrationResult:
     cal_h = max(window.height(), 1)
     angles_arr = np.asarray(captured_angles, dtype=float)
     targets_arr = np.asarray(captured_targets, dtype=float)
+
+    # --- G8b: train / holdout split (only when subset_size == 13) ------
+    train_idx, holdout_idx = split_train_holdout(captured_target_indices)
+    if subset_size != 13:
+        # No holdout for incremental / 9-pt runs — all samples train.
+        train_idx = list(range(len(angles_arr)))
+        holdout_idx = []
+    train_angles = angles_arr[train_idx] if train_idx else angles_arr
+    train_targets = targets_arr[train_idx] if train_idx else targets_arr
+    holdout_angles = angles_arr[holdout_idx] if holdout_idx else None
+    holdout_targets = targets_arr[holdout_idx] if holdout_idx else None
+
+    # --- G8a + G8b: incremental refit vs full fit ----------------------
     mapper = GazeMapper(screen_w=cal_w, screen_h=cal_h)
-    try:
-        loo = mapper.fit(angles_arr, targets_arr)
-    except Exception as exc:
-        raise CalibrationError(f"GazeMapper.fit failed: {exc}") from exc
+    fit_method = "13pt_holdout" if subset_size == 13 else f"{subset_size}pt"
+    holdout_error_px: float | None = None
+    if base_profile is not None:
+        # Incremental "top-up" — load existing profile, partial_fit on
+        # the new train samples. Skip holdout for partial fits.
+        base_path = Paths.gaze_profile(base_profile)
+        if not base_path.exists():
+            raise CalibrationError(
+                f"--calibrate-incremental requires --profile {base_profile!r} "
+                f"to already exist at {base_path}"
+            )
+        if not mapper.load(base_path):
+            raise CalibrationError(
+                f"Failed to load base profile from {base_path}"
+            )
+        try:
+            loo = mapper.partial_fit(
+                train_angles,
+                train_targets,
+                fit_method=f"incremental_{subset_size}pt",
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise CalibrationError(f"partial_fit failed: {exc}") from exc
+        fit_method = f"incremental_{subset_size}pt"
+    else:
+        try:
+            loo = mapper.fit(train_angles, train_targets, fit_method=fit_method)
+        except Exception as exc:
+            raise CalibrationError(f"GazeMapper.fit failed: {exc}") from exc
+        if holdout_angles is not None and holdout_targets is not None:
+            holdout_error_px = mapper.compute_holdout_error(
+                holdout_angles, holdout_targets
+            )
+            # Persist the holdout metric into the schema-v2 metadata via
+            # a tiny refit-of-the-same-data — the fit() API takes
+            # holdout_error_px as a kwarg and stores it. Cheaper than
+            # opening a private setter for one field.
+            mapper.fit(
+                train_angles,
+                train_targets,
+                fit_method=fit_method,
+                holdout_error_px=holdout_error_px,
+            )
 
     profile_path = Paths.gaze_profile(profile)
     mapper.save(profile_path.with_suffix(""))  # GazeMapper.save adds .npz/.meta.json
     logger.info(
-        "Calibration: %d samples, LOO error = %.1f px → %s",
-        len(captured_angles),
+        "Calibration: %d samples (train), %d holdout, LOO=%.1f px, "
+        "holdout=%s, method=%s → %s",
+        len(train_idx) or len(angles_arr),
+        len(holdout_idx),
         loo,
+        f"{holdout_error_px:.1f} px" if holdout_error_px is not None else "n/a",
+        fit_method,
         profile_path,
     )
     return CalibrationResult(
         success=True,
         loo_error_px=loo,
+        holdout_error_px=holdout_error_px,
+        fit_method=fit_method,
         points_captured=len(captured_angles),
         profile_path=str(profile_path),
     )

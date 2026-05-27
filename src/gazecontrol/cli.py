@@ -304,12 +304,22 @@ def _cmd_benchmark(seconds: int, mode: InputMode) -> None:
     print(f"{'─' * 60}\n")
 
 
-def _cmd_calibrate_gaze(profile: str) -> int:
+def _cmd_calibrate_gaze(
+    profile: str,
+    *,
+    subset_size: int = 13,
+    base_profile: str | None = None,
+) -> int:
     """Run the Qt-based gaze calibration UI."""
     from gazecontrol.calibration.runner import run_gaze_calibration
 
     vdesk = _detect_virtual_desktop()
-    return run_gaze_calibration(profile=profile, vdesk=vdesk)
+    return run_gaze_calibration(
+        profile=profile,
+        vdesk=vdesk,
+        subset_size=subset_size,
+        base_profile=base_profile,
+    )
 
 
 def _cmd_migrate_profiles(*, dry_run: bool, as_json: bool) -> int:
@@ -439,6 +449,19 @@ def main() -> None:
         "--profile", default=None, help="Calibration profile name (overrides GazeSettings.profile)."
     )
     parser.add_argument(
+        "--calibrate-incremental",
+        metavar="N",
+        type=int,
+        choices=[3, 5, 9, 13],
+        default=None,
+        help=(
+            "Run an incremental top-up calibration (G8): captures only N "
+            "targets (3, 5, 9, or 13) and partial-fits the existing profile "
+            "instead of re-running the full grid. Requires --profile to "
+            "name an existing profile."
+        ),
+    )
+    parser.add_argument(
         "--migrate-profiles",
         action="store_true",
         help=(
@@ -508,6 +531,22 @@ def main() -> None:
     if args.calibrate_gaze:
         profile = args.profile or s.gaze.profile
         sys.exit(_cmd_calibrate_gaze(profile))
+
+    if args.calibrate_incremental is not None:
+        # Incremental flow needs an existing profile to top up.
+        if not args.profile:
+            print(
+                "--calibrate-incremental requires --profile NAME of an existing profile.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        sys.exit(
+            _cmd_calibrate_gaze(
+                args.profile,
+                subset_size=args.calibrate_incremental,
+                base_profile=args.profile,
+            )
+        )
 
     show_dialog = s.runtime.show_mode_selector and not args.no_mode_selector and args.mode is None
     mode, used_dialog = _resolve_mode(
